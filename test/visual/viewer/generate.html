@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>pdf-sdk browser-side generate</title>
+  </head>
+  <body>
+    <div id="status">loading</div>
+    <script type="module">
+      import {
+        PdfSdk,
+        base64ToBytes,
+      } from "/sdk-bundle.mjs";
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      window.runBrowserGenerate = async function runBrowserGenerate({
+        pdfBase64,
+        textFillsByAcroName,
+        flatten,
+      }) {
+        const bytes = base64ToBytes(pdfBase64);
+        const sdk = await PdfSdk.load(bytes);
+        for (const [acroName, value] of textFillsByAcroName) {
+          const id = `acro:${acroName}:0`;
+          sdk.setFieldValue(id, value);
+        }
+        const out = await sdk.generate({ flatten: !!flatten });
+        // Return as regular array — Playwright serializes reliably.
+        return Array.from(out);
+      };
+
+      document.getElementById("status").textContent = "ready";
+    </script>
+  </body>
+</html>

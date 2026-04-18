@@ -1,9 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { PdfSdk } from "../src/index.js";
+import { PdfSdk, type AcroFormField, type Field } from "../src/index.js";
 import { FIXTURES, loadFixture } from "./helpers/fixtures.js";
 
 function idFor(name: string): string {
   return `acro:${name}:0`;
+}
+
+function asAcro(field: Field | undefined | null): AcroFormField {
+  if (!field || field.source !== "acroform")
+    throw new Error("expected acroform field");
+  return field;
+}
+
+function acroFieldName(field: Field): string | null {
+  return field.source === "acroform" ? field.acroFieldName : null;
 }
 
 async function loadFresh(): Promise<PdfSdk> {
@@ -14,8 +24,8 @@ describe("setFieldValue: text fields", () => {
   it("writes a string value and reflects it in the template", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("plain_text"), "Hello, world");
-    const f = sdk.getField(idFor("plain_text"));
-    if (f?.type !== "text") throw new Error();
+    const f = asAcro(sdk.getField(idFor("plain_text")));
+    if (f.type !== "text") throw new Error();
     expect(f.value).toBe("Hello, world");
   });
 
@@ -36,8 +46,8 @@ describe("setFieldValue: text fields", () => {
   it("truncates to maxLength and emits a diagnostic", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("maxlen_5"), "abcdefghij");
-    const f = sdk.getField(idFor("maxlen_5"));
-    if (f?.type !== "text") throw new Error();
+    const f = asAcro(sdk.getField(idFor("maxlen_5")));
+    if (f.type !== "text") throw new Error();
     expect(f.value).toBe("abcde");
     expect(
       sdk.diagnostics.some(
@@ -49,8 +59,8 @@ describe("setFieldValue: text fields", () => {
   it("accepts empty string", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("plain_text"), "");
-    const f = sdk.getField(idFor("plain_text"));
-    if (f?.type !== "text") throw new Error();
+    const f = asAcro(sdk.getField(idFor("plain_text")));
+    if (f.type !== "text") throw new Error();
     expect(f.value).toBe("");
   });
 });
@@ -59,8 +69,8 @@ describe("setFieldValue: checkbox fields", () => {
   it("accepts true to check", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("single_check"), true);
-    const f = sdk.getField(idFor("single_check"));
-    if (f?.type !== "checkbox") throw new Error();
+    const f = asAcro(sdk.getField(idFor("single_check")));
+    if (f.type !== "checkbox") throw new Error();
     expect(f.value).toBe(true);
   });
 
@@ -68,8 +78,8 @@ describe("setFieldValue: checkbox fields", () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("single_check"), true);
     sdk.setFieldValue(idFor("single_check"), false);
-    const f = sdk.getField(idFor("single_check"));
-    if (f?.type !== "checkbox") throw new Error();
+    const f = asAcro(sdk.getField(idFor("single_check")));
+    if (f.type !== "checkbox") throw new Error();
     expect(f.value).toBe(false);
   });
 
@@ -85,8 +95,8 @@ describe("setFieldValue: radio fields", () => {
   it("accepts a valid option", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("shipping"), "express");
-    const f = sdk.getField(idFor("shipping"));
-    if (f?.type !== "radio") throw new Error();
+    const f = asAcro(sdk.getField(idFor("shipping")));
+    if (f.type !== "radio") throw new Error();
     expect(f.value).toBe("express");
   });
 
@@ -107,8 +117,8 @@ describe("setFieldValue: dropdown fields", () => {
   it("accepts a single string", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("country"), "Armenia");
-    const f = sdk.getField(idFor("country"));
-    if (f?.type !== "dropdown") throw new Error();
+    const f = asAcro(sdk.getField(idFor("country")));
+    if (f.type !== "dropdown") throw new Error();
     expect(f.value).toEqual(["Armenia"]);
   });
 
@@ -124,8 +134,8 @@ describe("setFieldValue: listbox fields", () => {
   it("accepts a single string on a single-select listbox", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("fruit_single"), "Cherry");
-    const f = sdk.getField(idFor("fruit_single"));
-    if (f?.type !== "listbox") throw new Error();
+    const f = asAcro(sdk.getField(idFor("fruit_single")));
+    if (f.type !== "listbox") throw new Error();
     expect(f.value).toEqual(["Cherry"]);
   });
 
@@ -139,8 +149,8 @@ describe("setFieldValue: listbox fields", () => {
   it("accepts multiple values on a multi-select listbox", async () => {
     const sdk = await loadFresh();
     sdk.setFieldValue(idFor("fruit_multi"), ["Apple", "Banana", "Cherry"]);
-    const f = sdk.getField(idFor("fruit_multi"));
-    if (f?.type !== "listbox") throw new Error();
+    const f = asAcro(sdk.getField(idFor("fruit_multi")));
+    if (f.type !== "listbox") throw new Error();
     expect(f.value).toEqual(["Apple", "Banana", "Cherry"]);
   });
 
@@ -176,26 +186,26 @@ describe("generate: default preserves AcroForm", () => {
     expect(t.metadata.hasAcroForm).toBe(true);
 
     const get = (name: string) =>
-      t.fields.find((f) => f.acroFieldName === name);
+      t.fields.find((f) => acroFieldName(f) === name);
 
-    const plain = get("plain_text");
-    if (plain?.type !== "text") throw new Error();
+    const plain = asAcro(get("plain_text"));
+    if (plain.type !== "text") throw new Error();
     expect(plain.value).toBe("round-trip");
 
-    const chk = get("single_check");
-    if (chk?.type !== "checkbox") throw new Error();
+    const chk = asAcro(get("single_check"));
+    if (chk.type !== "checkbox") throw new Error();
     expect(chk.value).toBe(true);
 
-    const ship = get("shipping");
-    if (ship?.type !== "radio") throw new Error();
+    const ship = asAcro(get("shipping"));
+    if (ship.type !== "radio") throw new Error();
     expect(ship.value).toBe("overnight");
 
-    const country = get("country");
-    if (country?.type !== "dropdown") throw new Error();
+    const country = asAcro(get("country"));
+    if (country.type !== "dropdown") throw new Error();
     expect(country.value).toEqual(["Japan"]);
 
-    const fruitMulti = get("fruit_multi");
-    if (fruitMulti?.type !== "listbox") throw new Error();
+    const fruitMulti = asAcro(get("fruit_multi"));
+    if (fruitMulti.type !== "listbox") throw new Error();
     expect(fruitMulti.value.sort()).toEqual(["Apple", "Grape"].sort());
   });
 
@@ -211,6 +221,41 @@ describe("generate: default preserves AcroForm", () => {
     // Byte-equal at this level. If this becomes flaky upstream, switch to a
     // structural comparison on reparsed Template.
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
+  });
+});
+
+describe("generate: unicode", () => {
+  it("renders non-Latin text via the bundled Noto Sans subset", async () => {
+    const sdk = await loadFresh();
+    sdk.setFieldValue(idFor("plain_text"), "Привет, мир — café");
+
+    const bytes = await sdk.generate();
+    const reparsed = await PdfSdk.load(bytes);
+    const f = asAcro(
+      reparsed
+        .toTemplate()
+        .fields.find(
+          (x) => x.source === "acroform" && x.acroFieldName === "plain_text",
+        ),
+    );
+    if (f.type !== "text") throw new Error();
+    expect(f.value).toBe("Привет, мир — café");
+  });
+
+  it("accepts a caller-supplied font override", async () => {
+    const sdk = await loadFresh();
+    sdk.setFieldValue(idFor("plain_text"), "hello");
+
+    // We don't have a second font to ship; just confirm passing the bundled
+    // bytes through the override path produces a valid document.
+    const { base64ToBytes } = await import("../src/utils.js");
+    const { NOTO_SANS_REGULAR_TTF_BASE64 } =
+      await import("../src/fonts/noto-sans.js");
+    const fontBytes = base64ToBytes(NOTO_SANS_REGULAR_TTF_BASE64);
+
+    const bytes = await sdk.generate({ font: fontBytes });
+    const reparsed = await PdfSdk.load(bytes);
+    expect(reparsed.toTemplate().metadata.hasAcroForm).toBe(true);
   });
 });
 

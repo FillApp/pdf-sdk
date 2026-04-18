@@ -193,7 +193,31 @@ export function parseToTemplate(
     } else if (type === "checkbox") {
       fields.push({ ...base, type: "checkbox", value: value as boolean });
     } else if (type === "radio") {
-      fields.push({ ...base, type: "radio", value: value as string, options });
+      const radioWidgets = widgets
+        .map((w, idx) => {
+          const r = w.getRectangle();
+          const widgetPageRef = w.P();
+          const widgetPageIdx = pageIdxByRef.get(widgetPageRef);
+          if (widgetPageIdx === undefined) return null;
+          return {
+            value: options?.[idx] ?? "",
+            page: widgetPageIdx,
+            position: {
+              xPt: r.x,
+              yPt: r.y,
+              widthPt: r.width,
+              heightPt: r.height,
+            },
+          };
+        })
+        .filter((w): w is NonNullable<typeof w> => w !== null);
+      fields.push({
+        ...base,
+        type: "radio",
+        value: value as string,
+        options,
+        widgets: radioWidgets,
+      });
     } else if (type === "dropdown") {
       fields.push({
         ...base,

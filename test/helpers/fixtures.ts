@@ -19,4 +19,12 @@ export const FIXTURES = {
   allTypes: "form-all-types.pdf",
   /** No AcroForm at all — single-page static text. */
   flat: "flat.pdf",
+  /** Small PNG used by overlay image tests. */
+  overlayImage: "overlay-image.png",
+  /** 5 text fields with dot-separated hierarchical names. */
+  hierarchical: "hierarchical-fields.pdf",
+  /** Password-protected AcroForm PDF used to exercise `allowEncrypted`. */
+  encrypted: "encrypted.pdf",
+  /** 100-page PDF with 1000 text fields used by performance benchmarks. */
+  large: "large-form.pdf",
 } as const;

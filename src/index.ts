@@ -1,4 +1,9 @@
-export { PdfSdk, type LoadOptions } from "./sdk.js";
+export {
+  PdfSdk,
+  type GenerateOptions,
+  type LoadOptions,
+  type OverlayInit,
+} from "./sdk.js";
 export { parseToTemplate } from "./parse.js";
 export type {
   Template,
@@ -8,8 +13,16 @@ export type {
   TextField,
   CheckboxField,
   RadioField,
+  RadioWidget,
   DropdownField,
   ListboxField,
+  OverlayField,
+  OverlayKind,
+  OverlayText,
+  OverlayImage,
+  OverlayCheckmark,
+  OverlayCross,
+  RGB,
   ParseDiagnostic,
   ParseResult,
 } from "./types.js";

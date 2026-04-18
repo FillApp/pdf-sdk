@@ -46,6 +46,10 @@ const server = http.createServer((req, res) => {
   let target;
   if (url.pathname === "/" || url.pathname === "/index.html") {
     target = path.join(ROOT, "index.html");
+  } else if (url.pathname === "/generate" || url.pathname === "/generate.html") {
+    target = path.join(ROOT, "generate.html");
+  } else if (url.pathname === "/sdk-bundle.mjs") {
+    target = path.join(ROOT, "sdk-bundle.mjs");
   } else if (url.pathname.startsWith("/pdfjs/")) {
     target = path.join(PDFJS_ROOT, url.pathname.slice("/pdfjs/".length));
   } else if (url.pathname.startsWith("/pdfjs-standard-fonts/")) {

@@ -5,32 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 
-- `PdfSdk.setFieldValue(id, value)` — variant-correct mutator for every
-  supported AcroForm type. Rejects wrong value shapes, rejects out-of-options
-  values on choice fields, refuses multiple values on a single-select listbox,
-  and truncates over-long text fields to `maxLength` (emitting a
-  `value-truncated` diagnostic rather than throwing).
-- `PdfSdk.generate({ flatten? })` — renders the document back to bytes. Default
-  preserves the AcroForm so fields remain editable downstream. `flatten: true`
-  bakes values into page content and strips the form. Includes a pre-emptive
-  removal of signature fields to work around a known `pdf-lib` flatten crash
-  (emits a `signature-flatten-skipped` diagnostic).
-- Playwright visual test suite under `test/visual/` — renders generated PDFs
-  through `pdfjs-dist` in a controlled chromium harness and snapshots each
-  page. Baselines live alongside the specs and the committed PNGs are the
-  source of truth. Run `npm run test:visual` to verify, `npm run
-  test:visual:update` to refresh after an intentional change.
-- `ParseDiagnostic.kind` now additionally covers `value-truncated` and
-  `signature-flatten-skipped` for fill- and generate-time issues.
+- **Overlay content pipeline** — `addOverlay`, `updateOverlay`, `removeOverlay`
+  on `PdfSdk`, plus a new `OverlayField` variant in `Template.fields` keyed on
+  `source: "overlay"`. Supported kinds: `text` (value + size + optional RGB
+  color), `image` (PNG/JPEG bytes), `checkmark` and `cross` (vector strokes,
+  optional color). Drawn after AcroForm fill + appearance update, before any
+  optional flatten.
+- **Bundled Noto Sans subset** — Latin, Latin Extended, and Cyrillic coverage
+  (~67 KB TTF, ~90 KB base64 in the source tree). Registered via `fontkit` at
+  `generate()` time so non-Latin field values and overlay text render
+  correctly out of the box.
+- **`GenerateOptions.font`** — pass a custom TTF/OTF buffer to cover scripts
+  beyond the bundled subset (CJK, Arabic, etc.).
+- **Radio widget exposure** — `RadioField.widgets: RadioWidget[]` surfaces
+  every on-value with its own position + page, so consumers can render each
+  radio button hit target rather than just the first.
+- **Hierarchical field name support** — AcroForm fields with dotted names
+  (`billing.address.line1`) now round-trip cleanly. Regression: v0.1.0 was
+  saving with `useObjectStreams: false`, which silently dropped hierarchical
+  field values. Switched to the pdf-lib default.
+- **Cross-runtime determinism test** — the Playwright suite now spins an ESM
+  browser bundle of the SDK, runs the same fill+generate pipeline there, and
+  asserts `sha256(nodeBytes) === sha256(browserBytes)` for both
+  AcroForm-preserved and flattened output. This is the pin for the
+  isomorphic contract.
+- **Performance baseline** — `test/perf.test.ts` pins parse/fill/generate
+  times on a 100-page / 1000-field fixture. Observed on macOS / Node 22:
+  parse ~100 ms, fill × 100 ~160 ms, generate ~220 ms.
+- **Encrypted PDF fixture + `allowEncrypted` coverage** — explicit test that
+  the default path refuses encrypted input and the opt-in path loads
+  successfully.
+- **Visual regression for overlays and Unicode** — three new Playwright
+  specs + baseline PNGs: text/image/checkmark/cross on a flat PDF; mixed
+  AcroForm fill + overlays flattened; Cyrillic + accented Latin in AcroForm
+  fields.
 
 ### Changed
 
-- `generate()` sets a fixed modification date so repeated runs produce
-  byte-identical output for the same `Template`.
+- `generate()` now always runs `updateFieldAppearances(font)` with the
+  bundled or caller-supplied Unicode font — previously no font was passed,
+  leaving non-Latin values unrenderable.
+- `Field` is now `AcroFormField | OverlayField`. Consumers that handled only
+  AcroForm fields should narrow on `field.source === "acroform"` before
+  accessing type-specific props.
+- `ParseDiagnostic.kind` union extended with `value-truncated` and
+  `signature-flatten-skipped` (added in 0.1.0-alpha, locked in here).
+
+### Fixed
+
+- Hierarchical field names lost their values on reparse because of a
+  `useObjectStreams: false` save option. Removed; the default object-stream
+  save is used.
+
+## [0.1.0-alpha] — unreleased staging (folded into 0.2.0)
+
+- Initial `setFieldValue` / `generate` release. See [0.2.0] for the full
+  shipped scope.
 
 ## [0.0.1]
 

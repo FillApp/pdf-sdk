@@ -1,6 +1,6 @@
 {
   "name": "@fillapp/pdf-sdk",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "Isomorphic PDF form-filling SDK. Fill AcroForm fields and add overlay content. Same API in Node and browser.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -27,20 +27,22 @@
   ],
   "scripts": {
     "build": "tsup",
+    "build:browser-bundle": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=test/visual/viewer/sdk-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots",
-    "test:visual:ui": "playwright test --ui",
+    "test:visual": "npm run build:browser-bundle && playwright test",
+    "test:visual:update": "npm run build:browser-bundle && playwright test --update-snapshots",
+    "test:visual:ui": "npm run build:browser-bundle && playwright test --ui",
     "lint": "eslint src test",
     "format": "prettier --write \"{src,test}/**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"{src,test}/**/*.{ts,js,json,md}\"",
     "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
-    "@cantoo/pdf-lib": "^2.6.5"
+    "@cantoo/pdf-lib": "^2.6.5",
+    "@pdf-lib/fontkit": "^1.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

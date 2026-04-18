@@ -16,7 +16,9 @@ describe("parse: form with all AcroForm types", () => {
   beforeAll(async () => {
     sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
     template = sdk.toTemplate();
-    acroFields = template.fields;
+    acroFields = template.fields.filter(
+      (f): f is AcroFormField => f.source === "acroform",
+    );
   });
 
   describe("document metadata", () => {
@@ -148,6 +150,20 @@ describe("parse: form with all AcroForm types", () => {
       expect(f.options).toEqual(["standard", "express", "overnight"]);
     });
 
+    it("exposes each radio widget with its own position and on-value", () => {
+      const f = acroFields.find((x) => x.type === "radio");
+      if (f?.type !== "radio") throw new Error();
+      expect(f.widgets).toHaveLength(3);
+      expect(f.widgets.map((w) => w.value).sort()).toEqual(
+        ["standard", "express", "overnight"].sort(),
+      );
+      for (const w of f.widgets) {
+        expect(w.position.widthPt).toBeGreaterThan(0);
+        expect(w.position.heightPt).toBeGreaterThan(0);
+        expect(w.page).toBeGreaterThanOrEqual(0);
+      }
+    });
+
     it("extracts dropdown options", () => {
       const f = acroFields.find((x) => x.acroFieldName === "country");
       if (f?.type !== "dropdown") throw new Error();
@@ -165,6 +181,70 @@ describe("parse: form with all AcroForm types", () => {
     it("reports zero diagnostics on a well-formed fixture", () => {
       expect(sdk.diagnostics).toEqual([]);
     });
+  });
+});
+
+describe("parse: hierarchical field names", () => {
+  it("preserves dotted PDF field names and gives each a unique id", async () => {
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.hierarchical));
+    const t = sdk.toTemplate();
+    const names = t.fields
+      .filter((f): f is AcroFormField => f.source === "acroform")
+      .map((f) => f.acroFieldName);
+    expect(names).toContain("billing.name");
+    expect(names).toContain("billing.address.line1");
+    expect(names).toContain("shipping.address.line1");
+
+    const ids = new Set(t.fields.map((f) => f.id));
+    expect(ids.size).toBe(t.fields.length);
+
+    // Sanitized id should replace dots with underscores and remain URL-safe.
+    const billingName = t.fields.find(
+      (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
+    );
+    expect(billingName).toBeDefined();
+    expect(billingName!.id).toMatch(/^acro:[A-Za-z0-9_-]+:0$/);
+  });
+
+  it("setFieldValue + generate round-trip on a hierarchical field", async () => {
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.hierarchical));
+    const billingName = sdk
+      .getFields()
+      .find(
+        (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
+      );
+    expect(billingName).toBeDefined();
+    sdk.setFieldValue(billingName!.id, "Acme Co");
+
+    const bytes = await sdk.generate();
+    const reparsed = await PdfSdk.load(bytes);
+    const reRead = reparsed
+      .getFields()
+      .find(
+        (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
+      );
+    if (reRead?.source !== "acroform" || reRead.type !== "text")
+      throw new Error();
+    expect(reRead.value).toBe("Acme Co");
+  });
+});
+
+describe("parse: encrypted PDF", () => {
+  it("refuses encrypted input by default", async () => {
+    await expect(
+      PdfSdk.load(loadFixture(FIXTURES.encrypted)),
+    ).rejects.toThrow();
+  });
+
+  it("opens encrypted input when allowEncrypted is true", async () => {
+    // pdf-lib's ignoreEncryption mode parses the container but cannot decrypt
+    // object streams — fields read back empty. The test's job is to pin that
+    // the load path succeeds rather than throw, not to claim decryption.
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.encrypted), {
+      allowEncrypted: true,
+    });
+    const t = sdk.toTemplate();
+    expect(t.metadata.pageCount).toBeGreaterThan(0);
   });
 });
 

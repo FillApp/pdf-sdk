@@ -37,7 +37,7 @@ type Template = {
 };
 ```
 
-### Current shape (v0.0.1)
+### Current shape (v0.1.0-alpha)
 
 - `Field` is currently `AcroFormField` only.
 - `AcroFormField` is a **discriminated union keyed on `type`**: `TextField | CheckboxField | RadioField | DropdownField | ListboxField`.
@@ -59,10 +59,11 @@ type Template = {
 
 ### Diagnostics
 
-- Non-fatal parse issues go to `ParseDiagnostic[]`, never silently swallowed.
-- `PdfSdk.diagnostics` is a `readonly` array of them.
-- `kind` values: `"no-widgets" | "orphan-widget" | "value-extraction-failed" | "options-extraction-failed"`. When adding a new kind, update the union in `src/types.ts`.
+- Non-fatal issues from parse **and** runtime (fill, generate) go to `ParseDiagnostic[]`, never silently swallowed.
+- `PdfSdk.diagnostics` is typed `readonly` but is appended to in place as runtime diagnostics accumulate (text truncation, signature fields skipped during flatten, etc.).
+- Current `kind` values: `"no-widgets" | "orphan-widget" | "value-extraction-failed" | "options-extraction-failed" | "value-truncated" | "signature-flatten-skipped"`. When adding a new kind, update the union in `src/types.ts`.
 - `try { ... } catch {}` with empty body is forbidden. If you must catch, push a `ParseDiagnostic`.
+- The type is still named `ParseDiagnostic` for continuity; rename to `Diagnostic` if it becomes confusing — just coordinate the change across exports and the README.
 
 ---
 
@@ -87,8 +88,8 @@ If a decision comes up about switching engines: the other serious option is vend
 ```
 src/
 ├── index.ts       # Public exports
-├── sdk.ts         # PdfSdk class: load, getFields, toTemplate, diagnostics
-├── parse.ts       # PDF → Template (exports parseToTemplate too)
+├── sdk.ts         # PdfSdk class: load, getFields, toTemplate, setFieldValue, generate
+├── parse.ts       # PDF → Template (exports parseToTemplate + classifyField)
 ├── types.ts       # Template, AcroFormField variants, ParseDiagnostic
 └── utils.ts       # pt/mm/px/flipY, base64 helpers, normalizeInput
 
@@ -99,8 +100,15 @@ test/
 │   └── generate-flat.ts          # Script that produces flat.pdf
 ├── helpers/
 │   └── fixtures.ts               # loadFixture() + FIXTURES registry
-├── parse.test.ts                 # 37 tests
-└── utils.test.ts                 # 14 tests
+├── parse.test.ts                 # parse coverage
+├── fill.test.ts                  # setFieldValue + generate round-trip
+├── utils.test.ts                 # unit conversion + base64
+└── visual/                       # Playwright visual regression
+    ├── fill.spec.ts              # visual snapshots, one per fixture/page/variant
+    ├── helpers.ts                # spec-side glue: freshSdk, bytesToBase64, renderInViewer
+    ├── server.cjs                # tiny static server serving viewer + pdfjs assets
+    ├── viewer/index.html         # pdfjs-dist renderer harness
+    └── fill.spec.ts-snapshots/   # committed baseline PNGs (source of truth)
 
 .github/
 ├── workflows/ci.yml              # lint + typecheck + format + test + coverage + build + dist verify
@@ -108,7 +116,8 @@ test/
 
 eslint.config.mjs                 # ESLint 9 flat config, typescript-eslint
 .prettierrc.json                  # prettier config
-vitest.config.ts                  # v8 coverage, 85/90/80/85 thresholds
+vitest.config.ts                  # v8 coverage, 85/90/80/85 thresholds (test/visual excluded)
+playwright.config.ts              # visual e2e config, chromium project, committed baselines
 tsup.config.ts                    # ESM + CJS + d.ts, index + utils entries
 tsconfig.json                     # strict mode
 package.json                      # exports map for `.` and `./utils`
@@ -132,6 +141,9 @@ class PdfSdk {
   getField(id: string): Field | null;  // copy
   getPdfDocument(): PDFDocument; // escape hatch — advanced use only
 
+  setFieldValue(id: string, value: string | string[] | boolean): void;
+  generate(opts?: { flatten?: boolean }): Promise<Uint8Array>;
+
   readonly diagnostics: readonly ParseDiagnostic[];
 }
 ```
@@ -140,6 +152,9 @@ Invariants, hold these:
 - `getFields`, `getField`, `toTemplate` **always return fresh copies.** Consumers can mutate the result without affecting the SDK instance. Tests pin this.
 - `load` **refuses encrypted PDFs by default.** Opt in with `{ allowEncrypted: true }`. This is a security contract — do not quietly relax it.
 - `PdfSdk`'s constructor is `private`. External users must use `load`.
+- `setFieldValue` is **variant-correct**. A wrong-type value throws. A value not in a choice field's `options` throws. An over-long text value is truncated to `maxLength` and a `value-truncated` diagnostic is pushed (never throws — ergonomic choice, do not change without a migration note).
+- `generate` **sets a fixed `ModDate`** so repeated runs with the same `Template` produce byte-identical output. Do not introduce any other runtime-varying state (timestamps, random ids, wall-clock dates).
+- `generate({ flatten: true })` **pre-removes non-fillable fields** (signatures, plain buttons) before calling `form.flatten()` to dodge a pdf-lib crash. A `signature-flatten-skipped` diagnostic is pushed per removed field.
 
 ### `parseToTemplate(doc, bytes): ParseResult`
 
@@ -160,17 +175,80 @@ CI enforces, do not weaken:
 - `npm run typecheck` — `tsc --noEmit`, strict
 - `npm run lint` — ESLint 9 flat config
 - `npm run format:check` — Prettier
-- `npm test` — 51 tests across Node 18, 20, 22
+- `npm test` — unit suite across Node 18, 20, 22 (73 tests as of v0.1.0-alpha)
 - `npm run test:coverage` — 85/90/80/85 thresholds (lines/functions/branches/statements)
 - `npm run build` — ESM + CJS + `.d.ts`. CI then loads the dist artifacts to verify exports are actually present.
+
+**Visual regression runs locally only** (see §6a). CI does not currently run Playwright because baselines are committed per-OS and the initial baselines are `darwin`. Add a linux-baseline generator + CI job before enforcing.
 
 Local development:
 ```bash
 npm install
 npm run typecheck && npm run lint && npm test
+# Optional, requires Playwright browsers:
+npx playwright install chromium && npm run test:visual
 ```
 
 `npm run prepublishOnly` runs the full gate before publish.
+
+### Performance baseline (macOS, Node 22)
+
+Measured on `test/fixtures/large-form.pdf` — 100 pages, 1000 text fields:
+
+| Phase                 | Observed | Budget (test pins) |
+| --------------------- | -------- | ------------------ |
+| `PdfSdk.load` + parse | ~100 ms  | 3000 ms            |
+| `setFieldValue` × 100 | ~160 ms  | 2000 ms            |
+| `generate` (default)  | ~220 ms  | 5000 ms            |
+
+`test/perf.test.ts` asserts against the generous budgets so CI doesn't flake on slow runners; tighten if you want early warning on regressions.
+
+---
+
+## 6a. Visual E2E testing — the contract
+
+This is the project's visual correctness net. Anything that changes the rendered output of `generate()` must be verified here before it's considered done.
+
+### How it works
+
+1. A tiny Node static server (`test/visual/server.cjs`) serves the viewer HTML and exposes `pdfjs-dist`'s build + standard fonts + cmaps over HTTP.
+2. Playwright (`playwright.config.ts`) spins that server up as a `webServer`, then launches chromium.
+3. Each spec in `test/visual/*.spec.ts` imports the SDK from `../../src`, builds a PDF with `PdfSdk.load(...) → setFieldValue → generate()`, and hands the bytes to the browser via `page.evaluate`.
+4. The viewer (`test/visual/viewer/index.html`) uses `pdfjs-dist` to render every page into a `<canvas id="page-N">`.
+5. The spec calls `expect(page.locator('#page-N')).toHaveScreenshot('name-page-N.png')`. Playwright compares against the committed PNG baseline in `test/visual/fill.spec.ts-snapshots/`.
+
+### Determinism
+
+Rendering runs with `disableFontFace: false`, `useSystemFonts: false`, and pdfjs-dist's bundled `standard_fonts/` + `cmaps/`. This means the rendered output does **not** depend on the host's installed fonts — two developers on the same OS with the same chromium version produce identical pixels.
+
+### Where baselines live
+
+`test/visual/fill.spec.ts-snapshots/<spec-name>-<project>-<platform>.png`. Today that's all `chromium-darwin`. When a linux baseline job lands, those will also live in this directory (`...-chromium-linux.png`) — Playwright automatically picks the right one for the runtime.
+
+### Workflow for changes
+
+- **Intentional visual change** (new field type, layout tweak, font bundled): run `npm run test:visual:update`, eyeball the new PNGs, commit them alongside the code change.
+- **Unintentional regression**: `npm run test:visual` fails with an HTML diff report. Investigate the diff before deciding whether to update the baseline.
+- **New spec added**: first run needs `npm run test:visual:update` to write initial baselines. Tests fail on CI if a baseline is missing — the expectation is that the spec author verified the first render and committed the baseline.
+
+### Scripts
+
+```
+npm run test:visual            # diff against committed baselines; fails on mismatch
+npm run test:visual:update     # (re)write baselines after an intentional change
+npm run test:visual:ui         # open Playwright UI mode for interactive debugging
+```
+
+### Platform caveat
+
+PNG snapshots are inherently OS-specific (subpixel hinting, font rasterizer, chromium version). Committed darwin baselines will **not** pass on linux. Either run visual tests only on the same OS that produced the baselines, or generate linux baselines in CI and commit both. Do not rebaseline darwin files on linux — they'll diverge from the developer machines.
+
+### When to add a new visual test
+
+- Every new field type that renders differently.
+- Every new overlay kind (`text`, `image`, `checkmark`, `cross` — coming in v0.2.0).
+- Every flatten path where output structure changes.
+- **Not** for pure template / JSON changes. Those are unit test territory.
 
 ---
 
@@ -193,17 +271,15 @@ The vision has not changed since the requirements doc was written. Reiterating h
 
 **v1.0.0 — legal-PDF form filling, end to end:**
 
-1. Load a PDF (any supported input).
+1. Load a PDF (any supported input). ← **done in v0.0.1**
 2. Parse it to a `Template` with 100% field type coverage. ← **done in v0.0.1**
-3. Fill every native AcroForm field type through `setFieldValue(id, value)`. ← v0.1.0
-4. Add overlay content via `addOverlay(field)`:
+3. Fill every native AcroForm field type through `setFieldValue(id, value)`. ← **done in v0.1.0-alpha**
+4. `generate({ flatten?: boolean })` produces the final PDF bytes. ← **done in v0.1.0-alpha** (AcroForm preserved by default; flatten with safe signature handling)
+5. Bundled Unicode font so non-Latin field values render. ← v0.1.0 finalization
+6. Add overlay content via `addOverlay(field)`:
    - Text with font family, size, color (RGB), bold, italic.
    - Image (PNG or JPEG) from bytes.
    - Checkmark / cross glyphs at PDF coordinates for flat-form "tick the box" use cases.
-   ← v0.2.0
-5. `generate({ flatten?: boolean })` produces the final PDF bytes:
-   - Default: AcroForm structure preserved — output opens in Acrobat as a fillable form with the AI's values pre-filled and the user's overlays baked in.
-   - `flatten: true`: one-way flatten for submission PDFs that should not be further edited.
    ← v0.2.0
 
 **Byte-for-byte determinism:** the same `Template` produces the same output bytes in Node and in the browser. Tests must hash the output and assert equality across runtimes.
