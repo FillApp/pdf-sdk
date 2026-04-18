@@ -10,21 +10,22 @@ export function loadFixture(name: string): Uint8Array {
 }
 
 /**
- * Registered test PDFs. Only fillable fields are asserted by tests; fixtures
- * may carry additional content (buttons, signatures, static text) that the
- * parser intentionally ignores.
+ * Registered test PDFs.
+ *   - f1040    : real IRS Form 1040 (2025). 2 pages, 126 text + 73 checkbox
+ *                fields. Contains XFA data which pdf-lib strips on load —
+ *                the AcroForm fallback is what we parse.
+ *   - choices  : SDK-authored single-page fixture carrying the three field
+ *                types f1040 does not use (radio, dropdown, listbox).
+ *   - flat     : No AcroForm at all — pins the "parse degrades cleanly"
+ *                contract.
+ *   - encrypted: Password-protected AcroForm PDF used to exercise
+ *                `allowEncrypted`.
  */
 export const FIXTURES = {
-  /** 23 text + 10 checkbox + 1 radio + 2 dropdown + 2 listbox, plus buttons and a signature that are filtered out. */
-  allTypes: "form-all-types.pdf",
-  /** No AcroForm at all — single-page static text. */
+  f1040: "f1040.pdf",
+  choices: "choices.pdf",
   flat: "flat.pdf",
+  encrypted: "encrypted.pdf",
   /** Small PNG used by overlay image tests. */
   overlayImage: "overlay-image.png",
-  /** 5 text fields with dot-separated hierarchical names. */
-  hierarchical: "hierarchical-fields.pdf",
-  /** Password-protected AcroForm PDF used to exercise `allowEncrypted`. */
-  encrypted: "encrypted.pdf",
-  /** 100-page PDF with 1000 text fields used by performance benchmarks. */
-  large: "large-form.pdf",
 } as const;

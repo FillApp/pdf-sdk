@@ -1,7 +1,9 @@
 import {
+  PDFBool,
   PDFCheckBox,
   PDFDocument,
   PDFDropdown,
+  PDFName,
   PDFOptionList,
   PDFRadioGroup,
   PDFTextField,
@@ -9,7 +11,6 @@ import {
   type Color,
   type PDFField,
   type PDFFont,
-  type PDFForm,
   type PDFPage,
 } from "@cantoo/pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
@@ -21,20 +22,15 @@ import type {
   RGB,
   Template,
 } from "./types.js";
-import { classifyField, parseToTemplate } from "./parse.js";
+import { parseToTemplate } from "./parse.js";
 import { base64ToBytes, normalizeInput } from "./utils.js";
 import { NOTO_SANS_REGULAR_TTF_BASE64 } from "./fonts/noto-sans.js";
 
-export type LoadOptions = {
-  /** Allow parsing encrypted documents. Default false — refuses and throws. */
-  allowEncrypted?: boolean;
-};
-
 /**
  * Distributive Omit — preserves the discriminated union so callers can pass a
- * literal keyed on `kind` and have TS narrow to the matching variant. Using
- * plain `Omit<OverlayField, "id">` collapses the union into a single type
- * whose keys are the intersection, which breaks variant-specific fields like
+ * literal keyed on `kind` and have TS narrow to the matching variant. Plain
+ * `Omit<OverlayField, "id">` collapses the union into a single type whose
+ * keys are the intersection, which breaks variant-specific fields like
  * `text` and `image`.
  */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown
@@ -45,14 +41,8 @@ export type OverlayInit = DistributiveOmit<OverlayField, "id">;
 
 export type GenerateOptions = {
   /**
-   * Bake field values into page content and strip the AcroForm. Output is not
-   * editable downstream but renders identically in every viewer. Default false.
-   */
-  flatten?: boolean;
-  /**
-   * Override the font used to render field appearances. If omitted, the
-   * bundled Noto Sans subset (Latin + Latin Extended + Cyrillic) is used so
-   * common European scripts render out of the box.
+   * Override the font used to render overlay text. If omitted, the bundled
+   * Noto Sans subset (Latin + Latin Extended + Cyrillic) is used.
    *
    * Pass a TrueType / OpenType font (as raw bytes) to support other scripts —
    * CJK, Arabic, Devanagari, etc. The font is embedded subsetted.
@@ -60,13 +50,30 @@ export type GenerateOptions = {
   font?: Uint8Array | ArrayBuffer;
 };
 
-/** Fixed timestamp used during generate() to keep output deterministic. */
+export type LoadOptions = {
+  /** Allow parsing encrypted documents. Default false — refuses and throws. */
+  allowEncrypted?: boolean;
+};
+
+/** Fixed timestamp used during generate() so repeat runs produce identical bytes. */
 const DETERMINISTIC_DATE = new Date("2000-01-01T00:00:00.000Z");
 
+/**
+ * Minimal AcroForm filler. Loads a PDF, surfaces every supported field as a
+ * discriminated-union entry on `Template.fields`, mutates field values via
+ * `setFieldValue`, and emits a PDF whose AcroForm is preserved so downstream
+ * viewers (Acrobat, pdf.js, etc.) can continue editing.
+ *
+ * Deliberately does NOT regenerate appearance streams — the canonical way to
+ * tell a PDF viewer "values changed, please re-render the widget chrome" is
+ * the `/NeedAppearances true` entry on the AcroForm dict, which we set on
+ * save. That keeps the SDK's behavior within the PDF spec and avoids fighting
+ * pdf-lib's renderer.
+ */
 export class PdfSdk {
   /**
-   * Append-only log of non-fatal issues encountered during parse, fill, or
-   * generate. Consumers can inspect this to surface warnings to users.
+   * Append-only log of non-fatal issues encountered during parse or fill.
+   * Consumers can inspect this to surface warnings to users.
    */
   readonly diagnostics: readonly ParseDiagnostic[];
   private readonly doc: PDFDocument;
@@ -120,11 +127,17 @@ export class PdfSdk {
 
   /**
    * Write a value into the named field, validating that the value shape
-   * matches the field's type. Throws on type mismatch or (for choice fields
-   * with a known option list) a value not in the options.
+   * matches the field's type.
    *
-   * Mutates internal state; subsequent `getField` / `toTemplate` calls and
-   * `generate()` reflect the new value.
+   *   - Text: string; `maxLength` enforced via truncation + diagnostic.
+   *   - Checkbox: boolean.
+   *   - Radio: string that matches one of `options[]`.
+   *   - Dropdown / listbox: string or string[]; single-select listbox
+   *     rejects arrays longer than one.
+   *
+   * Throws TypeError on shape mismatch, Error on unknown id / out-of-options
+   * value. Mutates internal state; subsequent `getField` / `toTemplate` calls
+   * and `generate()` reflect the new value.
    */
   setFieldValue(id: string, value: string | string[] | boolean): void {
     const field = this.template.fields.find((f) => f.id === id);
@@ -136,7 +149,6 @@ export class PdfSdk {
         `Field ${id} is an overlay; use updateOverlay() instead.`,
       );
     }
-
     const pdfField = this.doc.getForm().getField(field.acroFieldName);
 
     switch (field.type) {
@@ -274,190 +286,9 @@ export class PdfSdk {
   }
 
   /**
-   * Render the (possibly modified) document to PDF bytes.
-   *
-   * Default: keeps the AcroForm intact so fields remain editable downstream.
-   * `flatten: true` bakes the values into page content and removes the form —
-   * best for archival output.
-   */
-  async generate(opts: GenerateOptions = {}): Promise<Uint8Array> {
-    const font = await this.embedFieldFont(opts.font);
-    const form = this.doc.getForm();
-    form.updateFieldAppearances(font);
-
-    await this.drawOverlays(font);
-
-    if (opts.flatten) {
-      this.flattenSafely(form);
-    }
-
-    this.doc.setModificationDate(DETERMINISTIC_DATE);
-    // Keep default object streams. Setting useObjectStreams: false was
-    // evaluated for determinism but silently breaks hierarchical field names
-    // (values vanish on reparse).
-    return await this.doc.save();
-  }
-
-  /**
-   * Paint overlay fields onto their target pages. Runs after AcroForm
-   * appearances are updated but before any optional flatten. Text uses the
-   * same font the form fields use so fills and overlays share one embedded
-   * font subset.
-   */
-  private async drawOverlays(font: PDFFont): Promise<void> {
-    const pages = this.doc.getPages();
-    for (const field of this.template.fields) {
-      if (field.source !== "overlay") continue;
-      const page = pages[field.page];
-      if (!page) {
-        this.pushDiagnostic({
-          kind: "orphan-widget",
-          message: `Overlay ${field.id} targets page ${field.page} but the document has only ${pages.length} pages; skipped.`,
-        });
-        continue;
-      }
-      switch (field.kind) {
-        case "text":
-          this.drawOverlayText(page, font, field);
-          break;
-        case "image":
-          await this.drawOverlayImage(page, field);
-          break;
-        case "checkmark":
-          this.drawOverlayCheckmark(page, field);
-          break;
-        case "cross":
-          this.drawOverlayCross(page, field);
-          break;
-      }
-    }
-  }
-
-  private drawOverlayText(
-    page: PDFPage,
-    font: PDFFont,
-    field: Extract<OverlayField, { kind: "text" }>,
-  ): void {
-    const { position, text } = field;
-    // Position the baseline inside the bounding box. Most TTFs have ascent
-    // around 75% of the em — subtract a small margin so ascenders don't
-    // clip against the top of the box.
-    const baselineY = position.yPt + position.heightPt * 0.2;
-    page.drawText(text.value, {
-      x: position.xPt,
-      y: baselineY,
-      size: text.fontSizePt,
-      font,
-      color: rgbOrBlack(text.color),
-    });
-  }
-
-  private async drawOverlayImage(
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "image" }>,
-  ): Promise<void> {
-    const { position, image } = field;
-    const embedded =
-      image.mime === "image/png"
-        ? await this.doc.embedPng(image.bytes)
-        : await this.doc.embedJpg(image.bytes);
-    page.drawImage(embedded, {
-      x: position.xPt,
-      y: position.yPt,
-      width: position.widthPt,
-      height: position.heightPt,
-    });
-  }
-
-  private drawOverlayCheckmark(
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "checkmark" }>,
-  ): void {
-    const { position, color } = field;
-    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
-    const stroke = rgbOrBlack(color);
-    const thickness = Math.max(1, Math.min(w, h) * 0.12);
-    // Two line segments: bottom-left of the V, then rising to the top-right.
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.5 },
-      end: { x: x + w * 0.4, y: y + h * 0.2 },
-      thickness,
-      color: stroke,
-    });
-    page.drawLine({
-      start: { x: x + w * 0.4, y: y + h * 0.2 },
-      end: { x: x + w * 0.85, y: y + h * 0.8 },
-      thickness,
-      color: stroke,
-    });
-  }
-
-  private drawOverlayCross(
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "cross" }>,
-  ): void {
-    const { position, color } = field;
-    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
-    const stroke = rgbOrBlack(color);
-    const thickness = Math.max(1, Math.min(w, h) * 0.12);
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.15 },
-      end: { x: x + w * 0.85, y: y + h * 0.85 },
-      thickness,
-      color: stroke,
-    });
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.85 },
-      end: { x: x + w * 0.85, y: y + h * 0.15 },
-      thickness,
-      color: stroke,
-    });
-  }
-
-  /**
-   * Register fontkit and embed either the caller's font or the bundled
-   * Noto Sans subset. pdf-lib caches embedded fonts on the document, so
-   * repeated calls to `generate()` on the same instance reuse the embed.
-   */
-  private async embedFieldFont(
-    override?: Uint8Array | ArrayBuffer,
-  ): Promise<PDFFont> {
-    // registerFontkit is idempotent under @cantoo/pdf-lib — safe to call each
-    // time; calling it lazily means the dependency cost only shows up when
-    // generate() actually runs.
-    this.doc.registerFontkit(fontkit);
-    const bytes = override ?? base64ToBytes(NOTO_SANS_REGULAR_TTF_BASE64);
-    return await this.doc.embedFont(bytes, { subset: true });
-  }
-
-  /**
-   * Flatten with a workaround for pdf-lib's known signature-field crash.
-   * Pre-emptively remove any field we don't recognize (signatures, plain
-   * buttons) before calling flatten, since those produce "Unexpected N type"
-   * errors in the flatten path.
-   */
-  private flattenSafely(form: PDFForm): void {
-    const unknownFields = form
-      .getFields()
-      .filter((f) => classifyField(f) === null);
-    for (const f of unknownFields) {
-      this.pushDiagnostic({
-        fieldName: f.getName(),
-        kind: "signature-flatten-skipped",
-        message:
-          "Non-fillable field (likely signature/button) removed before flatten to avoid upstream crash.",
-      });
-      form.removeField(f);
-    }
-    form.flatten();
-  }
-
-  /**
-   * Add an overlay field to the template. Returns the generated id.
-   *
-   * Overlays are drawn by `generate()` in insertion order; later overlays
-   * paint over earlier ones. The returned id is stable for the lifetime of
-   * this SDK instance.
+   * Add an overlay field to the template. Overlays are drawn directly onto
+   * page content by `generate()` — use them for flat / scanned PDFs where
+   * no AcroForm widget exists. Returns the generated id.
    */
   addOverlay(field: OverlayInit): string {
     const id = `overlay:${this.overlayCounter++}`;
@@ -498,9 +329,156 @@ export class PdfSdk {
     return i;
   }
 
+  /**
+   * Serialize the (possibly modified) document to PDF bytes.
+   *
+   *   1. AcroForm values set via `setFieldValue` already live on the pdf-lib
+   *      form; we set `/NeedAppearances true` so compliant viewers re-render
+   *      each widget with its new value. The SDK does not pre-bake
+   *      appearance streams itself — that path competes with pdf-lib's
+   *      renderer and produces visible artifacts.
+   *   2. Overlay fields are drawn onto page content streams. These are
+   *      independent of the AcroForm and are intended for flat / scanned
+   *      PDFs where no interactive widget exists.
+   */
+  async generate(opts: GenerateOptions = {}): Promise<Uint8Array> {
+    const form = this.doc.getForm();
+    form.acroForm.dict.set(PDFName.of("NeedAppearances"), PDFBool.True);
+
+    if (this.hasOverlays()) {
+      const overlayFont = await this.embedOverlayFont(opts.font);
+      await this.drawOverlays(overlayFont);
+    }
+
+    this.doc.setModificationDate(DETERMINISTIC_DATE);
+    return await this.doc.save();
+  }
+
   /** Access the underlying pdf-lib document. Advanced use only. */
   getPdfDocument(): PDFDocument {
     return this.doc;
+  }
+
+  private hasOverlays(): boolean {
+    return this.template.fields.some((f) => f.source === "overlay");
+  }
+
+  private async embedOverlayFont(
+    override?: Uint8Array | ArrayBuffer,
+  ): Promise<PDFFont> {
+    this.doc.registerFontkit(fontkit);
+    const bytes = override ?? base64ToBytes(NOTO_SANS_REGULAR_TTF_BASE64);
+    return await this.doc.embedFont(bytes, { subset: true });
+  }
+
+  /**
+   * Paint overlay fields onto their target pages. Runs only when overlays
+   * exist so the common AcroForm-fill path pays no font-embedding cost.
+   */
+  private async drawOverlays(font: PDFFont): Promise<void> {
+    const pages = this.doc.getPages();
+    for (const field of this.template.fields) {
+      if (field.source !== "overlay") continue;
+      const page = pages[field.page];
+      if (!page) {
+        this.pushDiagnostic({
+          kind: "orphan-widget",
+          message: `Overlay ${field.id} targets page ${field.page} but the document has only ${pages.length} pages; skipped.`,
+        });
+        continue;
+      }
+      switch (field.kind) {
+        case "text":
+          this.drawOverlayText(page, font, field);
+          break;
+        case "image":
+          await this.drawOverlayImage(page, field);
+          break;
+        case "checkmark":
+          this.drawOverlayCheckmark(page, field);
+          break;
+        case "cross":
+          this.drawOverlayCross(page, field);
+          break;
+      }
+    }
+  }
+
+  private drawOverlayText(
+    page: PDFPage,
+    font: PDFFont,
+    field: Extract<OverlayField, { kind: "text" }>,
+  ): void {
+    const { position, text } = field;
+    const baselineY = position.yPt + position.heightPt * 0.2;
+    page.drawText(text.value, {
+      x: position.xPt,
+      y: baselineY,
+      size: text.fontSizePt,
+      font,
+      color: rgbOrBlack(text.color),
+    });
+  }
+
+  private async drawOverlayImage(
+    page: PDFPage,
+    field: Extract<OverlayField, { kind: "image" }>,
+  ): Promise<void> {
+    const { position, image } = field;
+    const embedded =
+      image.mime === "image/png"
+        ? await this.doc.embedPng(image.bytes)
+        : await this.doc.embedJpg(image.bytes);
+    page.drawImage(embedded, {
+      x: position.xPt,
+      y: position.yPt,
+      width: position.widthPt,
+      height: position.heightPt,
+    });
+  }
+
+  private drawOverlayCheckmark(
+    page: PDFPage,
+    field: Extract<OverlayField, { kind: "checkmark" }>,
+  ): void {
+    const { position, color } = field;
+    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
+    const stroke = rgbOrBlack(color);
+    const thickness = Math.max(1, Math.min(w, h) * 0.12);
+    page.drawLine({
+      start: { x: x + w * 0.15, y: y + h * 0.5 },
+      end: { x: x + w * 0.4, y: y + h * 0.2 },
+      thickness,
+      color: stroke,
+    });
+    page.drawLine({
+      start: { x: x + w * 0.4, y: y + h * 0.2 },
+      end: { x: x + w * 0.85, y: y + h * 0.8 },
+      thickness,
+      color: stroke,
+    });
+  }
+
+  private drawOverlayCross(
+    page: PDFPage,
+    field: Extract<OverlayField, { kind: "cross" }>,
+  ): void {
+    const { position, color } = field;
+    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
+    const stroke = rgbOrBlack(color);
+    const thickness = Math.max(1, Math.min(w, h) * 0.12);
+    page.drawLine({
+      start: { x: x + w * 0.15, y: y + h * 0.15 },
+      end: { x: x + w * 0.85, y: y + h * 0.85 },
+      thickness,
+      color: stroke,
+    });
+    page.drawLine({
+      start: { x: x + w * 0.15, y: y + h * 0.85 },
+      end: { x: x + w * 0.85, y: y + h * 0.15 },
+      thickness,
+      color: stroke,
+    });
   }
 
   private replaceField(next: AcroFormField): void {

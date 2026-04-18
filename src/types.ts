@@ -84,10 +84,11 @@ export type AcroFormField =
   | ListboxField;
 
 /**
- * Content drawn directly onto page content streams — not part of any AcroForm
- * structure. Backend and frontend both add, edit, and remove overlays through
- * the same API; they serialize into `Template.fields` alongside AcroForm
- * entries and are discriminated by `source`.
+ * Overlay content — drawn directly onto page content streams. Intended for
+ * flat / scanned PDFs that have no AcroForm structure to fill. Overlays do
+ * NOT compete with AcroForm rendering; consumers should use `setFieldValue`
+ * for AcroForm fields and reserve overlays for positions where no
+ * interactive field exists.
  */
 export type OverlayKind = "text" | "image" | "checkmark" | "cross";
 
@@ -135,8 +136,9 @@ export type OverlayField =
   | OverlayCross;
 
 /**
- * Non-fatal issue encountered during parse, fill, or generate.
- * Historically called `ParseDiagnostic`; kept that name for back-compat.
+ * Non-fatal issue encountered during parse or fill. The SDK never silently
+ * swallows errors — anything that fails quietly at lower levels of pdf-lib
+ * gets surfaced here so consumers can decide how to handle it.
  */
 export type ParseDiagnostic = {
   /** Original AcroForm field name, if the issue is field-scoped. */
@@ -146,8 +148,7 @@ export type ParseDiagnostic = {
     | "orphan-widget"
     | "value-extraction-failed"
     | "options-extraction-failed"
-    | "value-truncated"
-    | "signature-flatten-skipped";
+    | "value-truncated";
   message: string;
 };
 

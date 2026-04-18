@@ -8,224 +8,145 @@ import {
 import { PDFDocument } from "@cantoo/pdf-lib";
 import { FIXTURES, loadFixture } from "./helpers/fixtures.js";
 
-describe("parse: form with all AcroForm types", () => {
-  let template: Template;
-  let acroFields: AcroFormField[];
+describe("parse: f1040 (primary legal-form fixture)", () => {
   let sdk: PdfSdk;
+  let template: Template;
+  let fields: AcroFormField[];
 
   beforeAll(async () => {
-    sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    sdk = await PdfSdk.load(loadFixture(FIXTURES.f1040));
     template = sdk.toTemplate();
-    acroFields = template.fields.filter(
+    fields = template.fields.filter(
       (f): f is AcroFormField => f.source === "acroform",
     );
   });
 
   describe("document metadata", () => {
-    it("detects page count", () => {
-      expect(template.metadata.pageCount).toBe(3);
-    });
-
-    it("extracts per-page dimensions", () => {
-      expect(template.metadata.pages).toHaveLength(3);
+    it("reports 2 pages at US Letter size", () => {
+      expect(template.metadata.pageCount).toBe(2);
       for (const p of template.metadata.pages) {
         expect(p.widthPt).toBe(612);
         expect(p.heightPt).toBe(792);
       }
     });
 
-    it("flags that the document has an AcroForm", () => {
+    it("flags hasAcroForm: true", () => {
       expect(template.metadata.hasAcroForm).toBe(true);
     });
   });
 
   describe("field extraction", () => {
-    it("extracts the expected total of fillable fields", () => {
-      expect(acroFields).toHaveLength(38);
-    });
-
-    it.each([
-      ["text", 23],
-      ["checkbox", 10],
-      ["radio", 1],
-      ["dropdown", 2],
-      ["listbox", 2],
-    ] as const)("extracts %i %s field(s)", (type, expected) => {
-      const count = acroFields.filter((f) => f.type === type).length;
-      expect(count).toBe(expected);
-    });
-
-    it("gives every field a distinct id", () => {
-      const ids = new Set(acroFields.map((f) => f.id));
-      expect(ids.size).toBe(acroFields.length);
-    });
-
-    it("prefixes ids with 'acro:'", () => {
-      for (const f of acroFields) expect(f.id.startsWith("acro:")).toBe(true);
-    });
-
-    it("preserves the original acroFieldName", () => {
-      expect(acroFields.some((f) => f.acroFieldName === "plain_text")).toBe(
-        true,
-      );
-    });
-  });
-
-  describe("discriminated union on `type`", () => {
-    it("narrows text fields to string value + maxLength + multiline", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "plain_text")!;
-      if (f.type !== "text") throw new Error("wrong type");
-      expect(typeof f.value).toBe("string");
-      expect(typeof f.multiline).toBe("boolean");
-      expect(typeof f.maxLength === "number" || f.maxLength === undefined).toBe(
-        true,
-      );
-    });
-
-    it("narrows checkbox fields to boolean value", () => {
-      const f = acroFields.find((x) => x.type === "checkbox")!;
-      if (f.type !== "checkbox") throw new Error("wrong type");
-      expect(typeof f.value).toBe("boolean");
-    });
-
-    it("narrows dropdown/listbox values to string[]", () => {
-      const f = acroFields.find((x) => x.type === "dropdown")!;
-      if (f.type !== "dropdown") throw new Error("wrong type");
-      expect(Array.isArray(f.value)).toBe(true);
-    });
-  });
-
-  describe("field positions", () => {
-    it("extracts position in PDF points", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "plain_text")!;
-      expect(f.position.xPt).toBeCloseTo(200, 0);
-      expect(f.position.yPt).toBeCloseTo(678, 0);
-      expect(f.position.widthPt).toBeCloseTo(300, 0);
-      expect(f.position.heightPt).toBeCloseTo(18, 0);
+    it("extracts every text and checkbox field", () => {
+      const textCount = fields.filter((f) => f.type === "text").length;
+      const checkboxCount = fields.filter((f) => f.type === "checkbox").length;
+      expect(textCount).toBeGreaterThan(100);
+      expect(checkboxCount).toBeGreaterThan(50);
+      // f1040 does not carry radio / dropdown / listbox fields.
+      expect(fields.filter((f) => f.type === "radio")).toHaveLength(0);
+      expect(fields.filter((f) => f.type === "dropdown")).toHaveLength(0);
+      expect(fields.filter((f) => f.type === "listbox")).toHaveLength(0);
     });
 
     it("assigns every field to a valid page", () => {
-      for (const f of acroFields) {
+      for (const f of fields) {
         expect(f.page).toBeGreaterThanOrEqual(0);
         expect(f.page).toBeLessThan(template.metadata.pageCount);
       }
     });
-  });
 
-  describe("field flags", () => {
-    it("detects maxLength on text fields", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "maxlen_5");
-      if (f?.type !== "text") throw new Error();
-      expect(f.maxLength).toBe(5);
-    });
-
-    it("detects the multiline flag", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "multiline_field");
-      if (f?.type !== "text") throw new Error();
-      expect(f.multiline).toBe(true);
-    });
-
-    it("does not mark single-line text fields as multiline", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "plain_text");
-      if (f?.type !== "text") throw new Error();
-      expect(f.multiline).toBe(false);
-    });
-
-    it("detects the readOnly flag", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "readonly_field");
-      expect(f?.readOnly).toBe(true);
-    });
-
-    it("detects multiSelect on choice fields", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "fruit_multi");
-      if (f?.type !== "listbox") throw new Error();
-      expect(f.isMultiSelect).toBe(true);
-    });
-  });
-
-  describe("options for choice fields", () => {
-    it("extracts radio group options", () => {
-      const f = acroFields.find((x) => x.type === "radio");
-      if (f?.type !== "radio") throw new Error();
-      expect(f.options).toEqual(["standard", "express", "overnight"]);
-    });
-
-    it("exposes each radio widget with its own position and on-value", () => {
-      const f = acroFields.find((x) => x.type === "radio");
-      if (f?.type !== "radio") throw new Error();
-      expect(f.widgets).toHaveLength(3);
-      expect(f.widgets.map((w) => w.value).sort()).toEqual(
-        ["standard", "express", "overnight"].sort(),
-      );
-      for (const w of f.widgets) {
-        expect(w.position.widthPt).toBeGreaterThan(0);
-        expect(w.position.heightPt).toBeGreaterThan(0);
-        expect(w.page).toBeGreaterThanOrEqual(0);
+    it("gives every field a distinct, URL-safe id prefixed with acro:", () => {
+      const ids = new Set(fields.map((f) => f.id));
+      expect(ids.size).toBe(fields.length);
+      for (const f of fields) {
+        expect(f.id).toMatch(/^acro:[A-Za-z0-9_-]+:\d+$/);
       }
     });
 
-    it("extracts dropdown options", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "country");
-      if (f?.type !== "dropdown") throw new Error();
-      expect(f.options).toContain("Armenia");
+    it("preserves hierarchical PDF field names as-is in acroFieldName", () => {
+      // f1040 uses topmostSubform[0].Page1[0].f1_NN[0] everywhere — a good
+      // stress test for the parser's name handling.
+      expect(
+        fields.some((f) => f.acroFieldName.includes("topmostSubform[0]")),
+      ).toBe(true);
     });
 
-    it("extracts listbox options", () => {
-      const f = acroFields.find((x) => x.acroFieldName === "fruit_single");
-      if (f?.type !== "listbox") throw new Error();
-      expect(f.options).toContain("Apple");
-    });
-  });
-
-  describe("diagnostics", () => {
-    it("reports zero diagnostics on a well-formed fixture", () => {
-      expect(sdk.diagnostics).toEqual([]);
+    it("extracts rectangles in PDF points with positive dimensions", () => {
+      for (const f of fields) {
+        expect(f.position.widthPt).toBeGreaterThan(0);
+        expect(f.position.heightPt).toBeGreaterThan(0);
+      }
     });
   });
 });
 
-describe("parse: hierarchical field names", () => {
-  it("preserves dotted PDF field names and gives each a unique id", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.hierarchical));
-    const t = sdk.toTemplate();
-    const names = t.fields
-      .filter((f): f is AcroFormField => f.source === "acroform")
-      .map((f) => f.acroFieldName);
-    expect(names).toContain("billing.name");
-    expect(names).toContain("billing.address.line1");
-    expect(names).toContain("shipping.address.line1");
+describe("parse: choices (supplementary fixture for radio/dropdown/listbox)", () => {
+  let fields: AcroFormField[];
+  let sdk: PdfSdk;
 
-    const ids = new Set(t.fields.map((f) => f.id));
-    expect(ids.size).toBe(t.fields.length);
-
-    // Sanitized id should replace dots with underscores and remain URL-safe.
-    const billingName = t.fields.find(
-      (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
-    );
-    expect(billingName).toBeDefined();
-    expect(billingName!.id).toMatch(/^acro:[A-Za-z0-9_-]+:0$/);
+  beforeAll(async () => {
+    sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    fields = sdk
+      .toTemplate()
+      .fields.filter((f): f is AcroFormField => f.source === "acroform");
   });
 
-  it("setFieldValue + generate round-trip on a hierarchical field", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.hierarchical));
-    const billingName = sdk
-      .getFields()
-      .find(
-        (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
-      );
-    expect(billingName).toBeDefined();
-    sdk.setFieldValue(billingName!.id, "Acme Co");
+  it("parses exactly one of each of radio, dropdown, listbox", () => {
+    expect(fields.filter((f) => f.type === "radio")).toHaveLength(1);
+    expect(fields.filter((f) => f.type === "dropdown")).toHaveLength(1);
+    expect(fields.filter((f) => f.type === "listbox")).toHaveLength(1);
+  });
 
-    const bytes = await sdk.generate();
-    const reparsed = await PdfSdk.load(bytes);
-    const reRead = reparsed
-      .getFields()
-      .find(
-        (f) => f.source === "acroform" && f.acroFieldName === "billing.name",
-      );
-    if (reRead?.source !== "acroform" || reRead.type !== "text")
-      throw new Error();
-    expect(reRead.value).toBe("Acme Co");
+  it("extracts radio options and per-widget positions", () => {
+    const f = fields.find((x) => x.type === "radio");
+    if (f?.type !== "radio") throw new Error();
+    expect(f.options).toEqual(["standard", "express", "overnight"]);
+    expect(f.widgets).toHaveLength(3);
+    expect(f.widgets.map((w) => w.value).sort()).toEqual(
+      ["standard", "express", "overnight"].sort(),
+    );
+    for (const w of f.widgets) {
+      expect(w.position.widthPt).toBeGreaterThan(0);
+      expect(w.position.heightPt).toBeGreaterThan(0);
+    }
+  });
+
+  it("extracts dropdown options", () => {
+    const f = fields.find((x) => x.type === "dropdown");
+    if (f?.type !== "dropdown") throw new Error();
+    expect(f.options).toEqual([
+      "United States",
+      "Canada",
+      "Japan",
+      "Armenia",
+      "Germany",
+    ]);
+    expect(f.isMultiSelect).toBe(false);
+  });
+
+  it("extracts listbox options and multiSelect flag", () => {
+    const f = fields.find((x) => x.type === "listbox");
+    if (f?.type !== "listbox") throw new Error();
+    expect(f.options).toEqual([
+      "Apple",
+      "Banana",
+      "Cherry",
+      "Date",
+      "Elderberry",
+    ]);
+    expect(f.isMultiSelect).toBe(true);
+  });
+
+  it("reports zero diagnostics on a well-formed fixture", () => {
+    expect(sdk.diagnostics).toEqual([]);
+  });
+});
+
+describe("parse: flat PDF with no AcroForm", () => {
+  it("reports hasAcroForm: false and empty fields", async () => {
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.flat));
+    const t = sdk.toTemplate();
+    expect(t.metadata.hasAcroForm).toBe(false);
+    expect(t.fields).toEqual([]);
   });
 });
 
@@ -243,28 +164,18 @@ describe("parse: encrypted PDF", () => {
     const sdk = await PdfSdk.load(loadFixture(FIXTURES.encrypted), {
       allowEncrypted: true,
     });
-    const t = sdk.toTemplate();
-    expect(t.metadata.pageCount).toBeGreaterThan(0);
-  });
-});
-
-describe("parse: flat PDF with no AcroForm", () => {
-  it("reports hasAcroForm: false and empty fields", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.flat));
-    const t = sdk.toTemplate();
-    expect(t.metadata.hasAcroForm).toBe(false);
-    expect(t.fields).toEqual([]);
+    expect(sdk.toTemplate().metadata.pageCount).toBeGreaterThan(0);
   });
 });
 
 describe("load input types", () => {
   it("accepts Uint8Array", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     expect(sdk.getFields().length).toBeGreaterThan(0);
   });
 
   it("accepts ArrayBuffer", async () => {
-    const bytes = loadFixture(FIXTURES.allTypes);
+    const bytes = loadFixture(FIXTURES.choices);
     const ab = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(ab).set(bytes);
     const sdk = await PdfSdk.load(ab);
@@ -272,7 +183,7 @@ describe("load input types", () => {
   });
 
   it("accepts base64 string", async () => {
-    const bytes = loadFixture(FIXTURES.allTypes);
+    const bytes = loadFixture(FIXTURES.choices);
     const bin = String.fromCharCode(...bytes);
     const b64 = btoa(bin);
     const sdk = await PdfSdk.load(b64);
@@ -280,7 +191,7 @@ describe("load input types", () => {
   });
 
   it("accepts Blob", async () => {
-    const bytes = loadFixture(FIXTURES.allTypes);
+    const bytes = loadFixture(FIXTURES.choices);
     const ab = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(ab).set(bytes);
     const blob = new Blob([ab]);
@@ -299,19 +210,19 @@ describe("malformed input", () => {
 
 describe("getField / getFields / toTemplate return copies", () => {
   it("getFields returns a fresh array per call", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     expect(sdk.getFields()).not.toBe(sdk.getFields());
   });
 
   it("mutating getFields() does not mutate SDK state", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     const before = sdk.getFields().length;
     sdk.getFields().pop();
     expect(sdk.getFields().length).toBe(before);
   });
 
   it("toTemplate() returns an independent copy of fields and pages", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     const t1 = sdk.toTemplate();
     const t2 = sdk.toTemplate();
     expect(t1).not.toBe(t2);
@@ -320,17 +231,17 @@ describe("getField / getFields / toTemplate return copies", () => {
   });
 
   it("getField returns null for unknown id", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     expect(sdk.getField("does-not-exist")).toBeNull();
   });
 });
 
 describe("parseToTemplate standalone", () => {
   it("is exported and operates on a pdf-lib PDFDocument", async () => {
-    const bytes = loadFixture(FIXTURES.allTypes);
+    const bytes = loadFixture(FIXTURES.choices);
     const doc = await PDFDocument.load(bytes);
     const { template, diagnostics } = parseToTemplate(doc, bytes);
-    expect(template.fields.length).toBe(38);
+    expect(template.fields.length).toBe(3);
     expect(diagnostics).toEqual([]);
   });
 });

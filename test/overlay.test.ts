@@ -51,7 +51,7 @@ describe("updateOverlay", () => {
   });
 
   it("throws when the id points at an AcroForm field", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.allTypes));
+    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
     const acro = sdk.getFields().find((f) => f.source === "acroform");
     expect(acro).toBeDefined();
     expect(() => sdk.updateOverlay(acro!.id, {})).toThrow(/not an overlay/i);

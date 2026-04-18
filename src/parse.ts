@@ -41,7 +41,7 @@ function readMaxLength(field: PDFField): number | undefined {
   return ml instanceof PDFNumber ? ml.asNumber() : undefined;
 }
 
-export function classifyField(field: PDFField): AcroFormFieldType | null {
+function classifyField(field: PDFField): AcroFormFieldType | null {
   if (field instanceof PDFTextField) return "text";
   if (field instanceof PDFCheckBox) return "checkbox";
   if (field instanceof PDFRadioGroup) return "radio";

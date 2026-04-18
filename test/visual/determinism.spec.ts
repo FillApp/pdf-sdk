@@ -2,87 +2,64 @@ import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { bytesToBase64, freshSdk, loadFixtureBytes } from "./helpers.js";
 
-const ID = (name: string) => `acro:${name}:0`;
-
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+async function idOf(fixture: string, acroFieldName: string): Promise<string> {
+  const sdk = await freshSdk(fixture);
+  const f = sdk
+    .getFields()
+    .find((x) => x.source === "acroform" && x.acroFieldName === acroFieldName);
+  if (!f) throw new Error(`No field with acroFieldName ${acroFieldName}`);
+  return f.id;
+}
+
 test.describe("determinism: byte-equality across runtimes", () => {
-  test("Node and browser produce identical bytes for the same fill", async ({
+  test("Node and browser produce identical bytes for the same AcroForm fill", async ({
     page,
   }) => {
+    const fixtureName = "f1040.pdf";
     const textFills: Array<[string, string]> = [
-      ["plain_text", "Cross-runtime determinism"],
-      ["date_field", "2026-04-18"],
-      ["phone_field", "+1 555 0100"],
+      ["topmostSubform[0].Page1[0].f1_01[0]", "Jane"],
+      ["topmostSubform[0].Page1[0].f1_04[0]", "Doe"],
     ];
 
-    // Node generate
-    const sdkNode = await freshSdk("form-all-types.pdf");
+    // Resolve ids once against the parsed template (both runtimes parse the
+    // same bytes and derive the same stable ids, so either side can do this).
+    const byName: Record<string, string> = {};
+    for (const [name] of textFills) {
+      byName[name] = await idOf(fixtureName, name);
+    }
+
+    // Node generate.
+    const sdkNode = await freshSdk(fixtureName);
     for (const [name, value] of textFills) {
-      sdkNode.setFieldValue(ID(name), value);
+      sdkNode.setFieldValue(byName[name], value);
     }
     const nodeBytes = await sdkNode.generate();
 
-    // Browser generate against the same fixture
+    // Browser generate.
     await page.goto("/generate");
     await page.waitForFunction(
       () => document.getElementById("status")?.textContent === "ready",
       null,
       { timeout: 10_000 },
     );
-    const pdfBase64 = bytesToBase64(loadFixtureBytes("form-all-types.pdf"));
+    const pdfBase64 = bytesToBase64(loadFixtureBytes(fixtureName));
     const browserArray = await page.evaluate(
-      async ({ pdfBase64, textFills, flatten }) => {
+      async ({ pdfBase64, textFills }) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return await (window as any).runBrowserGenerate({
           pdfBase64,
           textFillsByAcroName: textFills,
-          flatten,
         });
       },
-      { pdfBase64, textFills, flatten: false },
+      { pdfBase64, textFills },
     );
     const browserBytes = new Uint8Array(browserArray);
 
     expect(browserBytes.byteLength).toBe(nodeBytes.byteLength);
-    expect(sha256(browserBytes)).toBe(sha256(nodeBytes));
-  });
-
-  test("flattened output is also byte-identical across runtimes", async ({
-    page,
-  }) => {
-    const textFills: Array<[string, string]> = [
-      ["plain_text", "Flattened determinism"],
-    ];
-
-    const sdkNode = await freshSdk("form-all-types.pdf");
-    for (const [name, value] of textFills) {
-      sdkNode.setFieldValue(ID(name), value);
-    }
-    const nodeBytes = await sdkNode.generate({ flatten: true });
-
-    await page.goto("/generate");
-    await page.waitForFunction(
-      () => document.getElementById("status")?.textContent === "ready",
-      null,
-      { timeout: 10_000 },
-    );
-    const pdfBase64 = bytesToBase64(loadFixtureBytes("form-all-types.pdf"));
-    const browserArray = await page.evaluate(
-      async ({ pdfBase64, textFills, flatten }) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return await (window as any).runBrowserGenerate({
-          pdfBase64,
-          textFillsByAcroName: textFills,
-          flatten,
-        });
-      },
-      { pdfBase64, textFills, flatten: true },
-    );
-    const browserBytes = new Uint8Array(browserArray);
-
     expect(sha256(browserBytes)).toBe(sha256(nodeBytes));
   });
 });

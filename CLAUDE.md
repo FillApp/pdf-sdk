@@ -60,8 +60,8 @@ type Template = {
 ### Diagnostics
 
 - Non-fatal issues from parse **and** runtime (fill, generate) go to `ParseDiagnostic[]`, never silently swallowed.
-- `PdfSdk.diagnostics` is typed `readonly` but is appended to in place as runtime diagnostics accumulate (text truncation, signature fields skipped during flatten, etc.).
-- Current `kind` values: `"no-widgets" | "orphan-widget" | "value-extraction-failed" | "options-extraction-failed" | "value-truncated" | "signature-flatten-skipped"`. When adding a new kind, update the union in `src/types.ts`.
+- `PdfSdk.diagnostics` is typed `readonly` but is appended to in place as runtime diagnostics accumulate (text truncation, orphan overlay pages, etc.).
+- Current `kind` values: `"no-widgets" | "orphan-widget" | "value-extraction-failed" | "options-extraction-failed" | "value-truncated"`. When adding a new kind, update the union in `src/types.ts`.
 - `try { ... } catch {}` with empty body is forbidden. If you must catch, push a `ParseDiagnostic`.
 - The type is still named `ParseDiagnostic` for continuity; rename to `Diagnostic` if it becomes confusing — just coordinate the change across exports and the README.
 
@@ -77,9 +77,8 @@ If a decision comes up about switching engines: the other serious option is vend
 
 ### Known pdf-lib bugs we accept and work around
 
-- `form.flatten()` crashes on signature widgets lacking appearance streams (issue #1347). Plan for generation: skip problematic fields before calling `flatten`, or emit a diagnostic.
-- Checkboxes / radios [may not render](https://github.com/Hopding/pdf-lib/issues/1549) after flatten. When implementing `generate({ flatten: true })`, validate the output visually against the test fixture.
 - `updateFieldAppearances()` with the default font is WinAnsi-only — non-Latin strings throw. Embed a bundled Unicode font before calling it.
+- `form.flatten()` crashes on signature widgets lacking appearance streams (issue #1347). We deliberately do not expose `flatten` in the public API — the `/NeedAppearances true` flag plus preserved AcroForm is the canonical path for v0.2.0.
 
 ---
 
@@ -142,7 +141,7 @@ class PdfSdk {
   getPdfDocument(): PDFDocument; // escape hatch — advanced use only
 
   setFieldValue(id: string, value: string | string[] | boolean): void;
-  generate(opts?: { flatten?: boolean }): Promise<Uint8Array>;
+  generate(opts?: { font?: Uint8Array | ArrayBuffer }): Promise<Uint8Array>;
 
   readonly diagnostics: readonly ParseDiagnostic[];
 }
@@ -154,7 +153,7 @@ Invariants, hold these:
 - `PdfSdk`'s constructor is `private`. External users must use `load`.
 - `setFieldValue` is **variant-correct**. A wrong-type value throws. A value not in a choice field's `options` throws. An over-long text value is truncated to `maxLength` and a `value-truncated` diagnostic is pushed (never throws — ergonomic choice, do not change without a migration note).
 - `generate` **sets a fixed `ModDate`** so repeated runs with the same `Template` produce byte-identical output. Do not introduce any other runtime-varying state (timestamps, random ids, wall-clock dates).
-- `generate({ flatten: true })` **pre-removes non-fillable fields** (signatures, plain buttons) before calling `form.flatten()` to dodge a pdf-lib crash. A `signature-flatten-skipped` diagnostic is pushed per removed field.
+- `generate` **does not flatten**. It sets `/NeedAppearances true` on the AcroForm dict so modern viewers regenerate widget appearances on open. Flatten is deliberately out of scope — adding it reintroduces the pdf-lib signature-flatten crash and the radio-button render artifacts we already fought through.
 
 ### `parseToTemplate(doc, bytes): ParseResult`
 
@@ -247,7 +246,7 @@ PNG snapshots are inherently OS-specific (subpixel hinting, font rasterizer, chr
 
 - Every new field type that renders differently.
 - Every new overlay kind (`text`, `image`, `checkmark`, `cross` — coming in v0.2.0).
-- Every flatten path where output structure changes.
+- Any change to how `generate()` writes AcroForm widget appearances or the `/NeedAppearances` flag.
 - **Not** for pure template / JSON changes. Those are unit test territory.
 
 ---
@@ -274,7 +273,7 @@ The vision has not changed since the requirements doc was written. Reiterating h
 1. Load a PDF (any supported input). ← **done in v0.0.1**
 2. Parse it to a `Template` with 100% field type coverage. ← **done in v0.0.1**
 3. Fill every native AcroForm field type through `setFieldValue(id, value)`. ← **done in v0.1.0-alpha**
-4. `generate({ flatten?: boolean })` produces the final PDF bytes. ← **done in v0.1.0-alpha** (AcroForm preserved by default; flatten with safe signature handling)
+4. `generate()` produces the final PDF bytes with the AcroForm preserved and `/NeedAppearances true` set. ← **done in v0.2.0**
 5. Bundled Unicode font so non-Latin field values render. ← v0.1.0 finalization
 6. Add overlay content via `addOverlay(field)`:
    - Text with font family, size, color (RGB), bold, italic.

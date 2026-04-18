@@ -13,7 +13,7 @@ Isomorphic PDF form-filling SDK. One package, one API, runs identically in Node 
 - Parse every native AcroForm field (text, checkbox, radio, dropdown, listbox), including radio groups with per-widget positions and hierarchical field names.
 - **Fill field values** via `setFieldValue(id, value)` with variant-correct validation, `maxLength` truncation, and rejection of unknown options.
 - **Add overlay content** — text (with size + RGB color), PNG/JPEG images, vector checkmark and cross glyphs at arbitrary PDF coordinates, on flat PDFs or on top of AcroForm output.
-- **Generate output** — `generate()` preserves the AcroForm; `generate({ flatten: true })` bakes values into page content and safely removes signature fields that would otherwise crash pdf-lib's flatten.
+- **Generate output** — `generate()` preserves the AcroForm so downstream viewers (Acrobat, Chrome, Firefox) continue to render and edit the form.
 - **Bundled Noto Sans subset** covering Latin, Latin Extended, and Cyrillic — non-Latin field values and overlay text render out of the box. Pass `{ font: ... }` to ship your own.
 - **Byte-for-byte determinism** — Node and browser produce identical output bytes for the same `Template` (asserted by the test suite).
 - Refuse encrypted documents by default (`allowEncrypted: true` to opt in).
@@ -47,11 +47,8 @@ sdk.setFieldValue("acro:shipping:0", "express");
 sdk.setFieldValue("acro:country:0", "Armenia");
 sdk.setFieldValue("acro:fruit_multi:0", ["Apple", "Cherry"]);
 
-// Default output keeps the AcroForm editable.
+// Output keeps the AcroForm editable.
 const filled = await sdk.generate();
-
-// Flatten for archival output.
-const flat = await sdk.generate({ flatten: true });
 ```
 
 ### Overlay content
@@ -93,7 +90,7 @@ for (const diag of sdk.diagnostics) {
 }
 ```
 
-Kinds surfaced today: `no-widgets`, `orphan-widget`, `value-extraction-failed`, `options-extraction-failed`, `value-truncated`, `signature-flatten-skipped`.
+Kinds surfaced today: `no-widgets`, `orphan-widget`, `value-extraction-failed`, `options-extraction-failed`, `value-truncated`.
 
 ## The `Template` shape
 
@@ -129,11 +126,13 @@ class PdfSdk {
   setFieldValue(id: string, value: string | string[] | boolean): void;
 
   addOverlay(field: OverlayInit): string;
-  updateOverlay(id: string, partial: Partial<OverlayField>): void;
+  updateOverlay(
+    id: string,
+    partial: Partial<Omit<OverlayField, "id" | "source" | "kind">>,
+  ): void;
   removeOverlay(id: string): void;
 
   generate(opts?: {
-    flatten?: boolean;
     font?: Uint8Array | ArrayBuffer; // override the bundled Noto Sans subset
   }): Promise<Uint8Array>;
 
