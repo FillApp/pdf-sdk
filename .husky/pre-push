@@ -1,0 +1,4 @@
+# Full CI gate locally before pushing.
+# Skip with: git push --no-verify
+echo "Running pre-push gate (typecheck → lint → format:check → test → build)..."
+npm run typecheck && npm run lint && npm run format:check && npm test && npm run build

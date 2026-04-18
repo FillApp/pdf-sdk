@@ -38,7 +38,17 @@
     "lint": "eslint src test",
     "format": "prettier --write \"{src,test}/**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"{src,test}/**/*.{ts,js,json,md}\"",
-    "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,js}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
   },
   "dependencies": {
     "@cantoo/pdf-lib": "^2.6.5",
@@ -51,6 +61,8 @@
     "@typescript-eslint/parser": "^8.0.0",
     "@vitest/coverage-v8": "^2.1.0",
     "eslint": "^9.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
     "pdfjs-dist": "^5.6.205",
     "prettier": "^3.0.0",
     "tsup": "^8.0.0",

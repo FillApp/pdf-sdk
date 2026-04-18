@@ -11,3 +11,4 @@ playwright-report
 test-results
 .playwright
 test/visual/viewer/sdk-bundle.mjs
+.cursor/
