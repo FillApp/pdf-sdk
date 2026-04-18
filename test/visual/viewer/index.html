@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>pdf-sdk visual harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        font-family: sans-serif;
+      }
+      #pages {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px;
+      }
+      canvas {
+        display: block;
+        box-shadow: 0 0 0 1px #ddd;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pages"></div>
+    <script type="module">
+      import * as pdfjs from "/pdfjs/pdf.mjs";
+
+      pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
+
+      const RENDER_SCALE = 1.5;
+
+      function base64ToBytes(b64) {
+        const bin = atob(b64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      }
+
+      async function renderPdf(base64) {
+        const pagesEl = document.getElementById("pages");
+        pagesEl.innerHTML = "";
+        const data = base64ToBytes(base64);
+        const doc = await pdfjs.getDocument({
+          data,
+          // Use pdfjs-bundled fonts so rendering is deterministic across
+          // machines (no dependence on OS font availability).
+          disableFontFace: false,
+          useSystemFonts: false,
+          standardFontDataUrl: "/pdfjs-standard-fonts/",
+          cMapUrl: "/pdfjs-cmaps/",
+          cMapPacked: true,
+        }).promise;
+
+        for (let i = 1; i <= doc.numPages; i++) {
+          const page = await doc.getPage(i);
+          const viewport = page.getViewport({ scale: RENDER_SCALE });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          canvas.dataset.pageIndex = String(i - 1);
+          canvas.id = `page-${i - 1}`;
+          pagesEl.appendChild(canvas);
+          const ctx = canvas.getContext("2d");
+          await page.render({ canvasContext: ctx, viewport }).promise;
+        }
+
+        window.__PDF_RENDERED__ = true;
+      }
+
+      window.renderPdf = renderPdf;
+    </script>
+  </body>
+</html>

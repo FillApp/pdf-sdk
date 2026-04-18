@@ -1,0 +1,84 @@
+{
+  "name": "@fillapp/pdf-sdk",
+  "version": "0.0.1",
+  "description": "Isomorphic PDF form-filling SDK. Fill AcroForm fields and add overlay content. Same API in Node and browser.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.ts",
+      "import": "./dist/utils.js",
+      "require": "./dist/utils.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots",
+    "test:visual:ui": "playwright test --ui",
+    "lint": "eslint src test",
+    "format": "prettier --write \"{src,test}/**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"{src,test}/**/*.{ts,js,json,md}\"",
+    "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@cantoo/pdf-lib": "^2.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "eslint": "^9.0.0",
+    "pdfjs-dist": "^5.6.205",
+    "prettier": "^3.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FillApp/pdf-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FillApp/pdf-sdk/issues"
+  },
+  "homepage": "https://github.com/FillApp/pdf-sdk#readme",
+  "keywords": [
+    "pdf",
+    "acroform",
+    "form-fill",
+    "isomorphic",
+    "browser",
+    "node",
+    "typescript"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
