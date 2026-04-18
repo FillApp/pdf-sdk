@@ -15,9 +15,9 @@ name: Release
 # pipeline from the Actions tab to validate it end to end. If NPM_TOKEN is
 # missing, the publish step falls back to --dry-run so nothing leaks.
 on:
-  # push:
-  #   tags:
-  #     - "v*.*.*"
+  push:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       dry_run:
