@@ -5,6 +5,7 @@ export {
   type OverlayInit,
 } from "./sdk.js";
 export { parseToTemplate } from "./parse.js";
+export { templateToJSON, templateFromJSON } from "./template-json.js";
 export type {
   Template,
   Field,
