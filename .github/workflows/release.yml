@@ -1,16 +1,19 @@
 name: Release
 
-# DISABLED until NPM_TOKEN is added to the repo secrets.
+# Publishes to npm on tag push using the NPM_TOKEN repo secret.
 #
-# When ready to publish:
-#   1. Add an npm automation token to repo secrets as `NPM_TOKEN`.
-#      Scope: the @fillapp npm org with "Read and write" packages access.
-#   2. Uncomment the `push.tags` trigger below so tag pushes auto-publish.
-#   3. Cut a release by pushing a tag: `git tag v0.2.0 && git push origin v0.2.0`.
+# Before the first tag push:
+#   1. Generate a granular access token on npmjs.com with Read+Write on the
+#      @fillapp scope. Copy it.
+#   2. Add it to this repo: Settings → Secrets and variables → Actions →
+#      New repository secret → name `NPM_TOKEN`, paste the value.
+#   3. Uncomment the `push.tags` trigger below so tag pushes auto-publish.
+#   4. Cut a release: `npm version patch && git push && git push --tags`.
 #      Or trigger manually from the Actions tab (workflow_dispatch).
 #
-# While disabled, the workflow can still be dispatched manually but the
-# publish step will no-op without NPM_TOKEN present.
+# While the tag trigger is commented out, you can still dry-run the full
+# pipeline from the Actions tab to validate it end to end. If NPM_TOKEN is
+# missing, the publish step falls back to --dry-run so nothing leaks.
 on:
   # push:
   #   tags:
@@ -24,7 +27,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for npm provenance
+  id-token: write # required for npm provenance attestations
 
 jobs:
   publish:
@@ -44,7 +47,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN is not set — release workflow will stop before publishing."
+            echo "NPM_TOKEN is not set — publish step will run as --dry-run only."
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
