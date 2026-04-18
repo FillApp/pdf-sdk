@@ -59,10 +59,7 @@ test.describe("visual: choices fixture (radio + dropdown + listbox)", () => {
     const sdk = await freshSdk("choices.pdf");
     sdk.setFieldValue(await idOf("choices.pdf", "shipping"), "express");
     sdk.setFieldValue(await idOf("choices.pdf", "country"), "Armenia");
-    sdk.setFieldValue(
-      await idOf("choices.pdf", "fruits"),
-      ["Apple", "Cherry"],
-    );
+    sdk.setFieldValue(await idOf("choices.pdf", "fruits"), ["Apple", "Cherry"]);
     const pdf = await sdk.generate();
     await renderInViewer(page, pdf);
     await expect(page.locator("#page-0")).toHaveScreenshot(
@@ -208,9 +205,7 @@ test.describe("visual: overlays on a flat PDF", () => {
 
     const pdf = await sdk.generate();
     await renderInViewer(page, pdf);
-    await expect(page.locator("#page-0")).toHaveScreenshot(
-      "overlays-flat.png",
-    );
+    await expect(page.locator("#page-0")).toHaveScreenshot("overlays-flat.png");
   });
 });
 

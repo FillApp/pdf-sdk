@@ -198,8 +198,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const sdk = await loadF1040();
     const t = sdk.toTemplate();
     const texts = t.fields.filter(
-      (f): f is TextField =>
-        f.source === "acroform" && f.type === "text",
+      (f): f is TextField => f.source === "acroform" && f.type === "text",
     );
     const withMax = texts.find((f) => f.maxLength !== undefined);
     const withoutMax = texts.find((f) => f.maxLength === undefined);
@@ -223,8 +222,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const sdk = await loadF1040();
     const t = sdk.toTemplate();
     const text = t.fields.find(
-      (f): f is TextField =>
-        f.source === "acroform" && f.type === "text",
+      (f): f is TextField => f.source === "acroform" && f.type === "text",
     )!;
     text.multiline = true;
     const restored = roundTrip(t);
@@ -236,8 +234,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const sdk = await loadChoices();
     const t = sdk.toTemplate();
     const lb = t.fields.find(
-      (f): f is ListboxField =>
-        f.source === "acroform" && f.type === "listbox",
+      (f): f is ListboxField => f.source === "acroform" && f.type === "listbox",
     );
     expect(lb).toBeDefined();
     lb!.isMultiSelect = true;
@@ -250,8 +247,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const sdk = await loadChoices();
     const t = sdk.toTemplate();
     const radio = t.fields.find(
-      (f): f is RadioField =>
-        f.source === "acroform" && f.type === "radio",
+      (f): f is RadioField => f.source === "acroform" && f.type === "radio",
     );
     expect(radio).toBeDefined();
     expect(radio!.widgets.length).toBeGreaterThan(0);
@@ -278,8 +274,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const sdk = await loadChoices();
     const t = sdk.toTemplate();
     const lb = t.fields.find(
-      (f): f is ListboxField =>
-        f.source === "acroform" && f.type === "listbox",
+      (f): f is ListboxField => f.source === "acroform" && f.type === "listbox",
     );
     expect(lb).toBeDefined();
     expect(lb!.options).toBeDefined();
@@ -297,8 +292,7 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     const fTemplate = f1040.toTemplate();
 
     const text = fTemplate.fields.find(
-      (f): f is TextField =>
-        f.source === "acroform" && f.type === "text",
+      (f): f is TextField => f.source === "acroform" && f.type === "text",
     )!;
     text.value = "specific text value";
 
@@ -309,21 +303,17 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     (checkbox as Extract<AcroFormField, { type: "checkbox" }>).value = true;
 
     const radio = cTemplate.fields.find(
-      (f): f is RadioField =>
-        f.source === "acroform" && f.type === "radio",
+      (f): f is RadioField => f.source === "acroform" && f.type === "radio",
     )!;
     if (radio.options && radio.options.length > 0) {
       radio.value = radio.options[0];
     }
 
     const listbox = cTemplate.fields.find(
-      (f): f is ListboxField =>
-        f.source === "acroform" && f.type === "listbox",
+      (f): f is ListboxField => f.source === "acroform" && f.type === "listbox",
     )!;
     listbox.value =
-      listbox.options && listbox.options.length > 0
-        ? [listbox.options[0]]
-        : [];
+      listbox.options && listbox.options.length > 0 ? [listbox.options[0]] : [];
 
     const restoredF = roundTrip(fTemplate);
     const restoredC = roundTrip(cTemplate);
@@ -336,7 +326,9 @@ describe("templateToJSON / templateFromJSON: AcroForm variant preservation", () 
     ) as Extract<AcroFormField, { type: "checkbox" }>;
     expect(rCheckbox.value).toBe(true);
 
-    const rRadio = restoredC.fields.find((f) => f.id === radio.id) as RadioField;
+    const rRadio = restoredC.fields.find(
+      (f) => f.id === radio.id,
+    ) as RadioField;
     expect(rRadio.value).toBe(radio.value);
 
     const rLb = restoredC.fields.find(

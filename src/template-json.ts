@@ -210,9 +210,7 @@ function serializeField(field: Field): SerializedField {
   return serializeOverlayField(field);
 }
 
-function serializeAcroFormField(
-  field: AcroFormField,
-): SerializedAcroFormField {
+function serializeAcroFormField(field: AcroFormField): SerializedAcroFormField {
   switch (field.type) {
     case "text": {
       const out: SerializedTextField = {
@@ -447,10 +445,7 @@ function requireArray(
   return v;
 }
 
-function readPosition(
-  obj: Record<string, unknown>,
-  context: string,
-): Position {
+function readPosition(obj: Record<string, unknown>, context: string): Position {
   const p = requireObject(obj, "position", context);
   return {
     xPt: requireNumber(p, "xPt", `${context}.position`),
@@ -713,7 +708,11 @@ export function templateFromJSON(json: string): Template {
   }
 
   const metadataRaw = requireObject(parsed, "metadata", "template");
-  const pageCount = requireNumber(metadataRaw, "pageCount", "template.metadata");
+  const pageCount = requireNumber(
+    metadataRaw,
+    "pageCount",
+    "template.metadata",
+  );
   const hasAcroForm = requireBoolean(
     metadataRaw,
     "hasAcroForm",
@@ -730,9 +729,7 @@ export function templateFromJSON(json: string): Template {
   });
 
   const fieldsRaw = requireArray(parsed, "fields", "template");
-  const fields = fieldsRaw.map((f, i) =>
-    readField(f, `template.fields[${i}]`),
-  );
+  const fields = fieldsRaw.map((f, i) => readField(f, `template.fields[${i}]`));
 
   return {
     basePdf,

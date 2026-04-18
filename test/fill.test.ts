@@ -70,8 +70,7 @@ describe("setFieldValue: text fields (f1040)", () => {
     expect(f.value).toBe("ab");
     expect(
       sdk.diagnostics.some(
-        (d) =>
-          d.kind === "value-truncated" && d.fieldName === F1040_MAXLEN_2,
+        (d) => d.kind === "value-truncated" && d.fieldName === F1040_MAXLEN_2,
       ),
     ).toBe(true);
   });
