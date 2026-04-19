@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3]
+
+### Fixed
+
+- Rotated image/stamp overlays were being stretched to fill their
+  axis-aligned bounding box. PDFium's stamp renderer needs _both_ the
+  AABB and the pre-rotation content rect — given only one rect, it
+  treats it as the unrotated box and scales the bitmap to the AABB,
+  which stretches content diagonally for rotations that aren't a
+  multiple of 90°.
+
+### Added
+
+- Optional `unrotatedPosition?: { xPt, yPt, widthPt, heightPt }` on every
+  overlay kind (`BaseOverlay`). When supplied on an image overlay it is
+  forwarded to PDFium as `unrotatedRect`, so `position` can stay as the
+  AABB while `unrotatedPosition` carries the original content box.
+  Omitting it preserves 0.4.2 behavior (PDFium treats `position` as the
+  unrotated rect). Only `image` overlays consume it today; other kinds
+  accept it for forward compatibility.
+
+### Known gaps
+
+- `unrotatedPosition` does not yet round-trip through `Template` JSON
+  serialization. A saved-then-reloaded template loses the hint and
+  falls back to AABB-only placement. Will be wired up in a follow-up.
+
 ## [0.4.2]
 
 ### Added

@@ -1098,6 +1098,14 @@ export class PdfSdk {
       pageIndex: field.page,
       rect,
       rotation: normalizeRotation(field.rotation),
+      ...(field.unrotatedPosition
+        ? {
+            unrotatedRect: sdkPositionToAnnotationRect(
+              field.unrotatedPosition,
+              page.size.height,
+            ),
+          }
+        : {}),
       contents: "",
     };
     // PDFium copies the image bytes out, so the ArrayBuffer we hand over can

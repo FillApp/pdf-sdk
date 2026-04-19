@@ -151,6 +151,20 @@ type BaseOverlay<K extends OverlayKind> = {
    * PDFium's `PdfAnnotationObjectBase.rotation`. Defaults to 0 when omitted.
    */
   rotation?: number;
+  /**
+   * Pre-rotation content rect, in the same SDK coord frame as `position`.
+   * Required for faithful rotated-appearance generation: PDFium needs both
+   * the axis-aligned bounding box (`position`) *and* the original content
+   * box so it can place and rotate the appearance without stretching it to
+   * fill the AABB. When omitted (or for `rotation === 0`), PDFium falls
+   * back to treating `position` as the unrotated rect.
+   */
+  unrotatedPosition?: {
+    xPt: number;
+    yPt: number;
+    widthPt: number;
+    heightPt: number;
+  };
 };
 
 export type OverlayText = BaseOverlay<"text"> & {
