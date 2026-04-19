@@ -660,6 +660,107 @@ describe("templateToJSON / templateFromJSON: overlay variant preservation", () =
     expect(o.opacity).toBe(0.4);
   });
 
+  it("rotation round-trips on every rotation-capable overlay kind", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "text",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 80, heightPt: 20 },
+      rotation: 45,
+      text: { value: "r", fontSizePt: 12 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "rect",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 30, heightPt: 30 },
+      rotation: 90,
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "checkmark",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 12, heightPt: 12 },
+      rotation: 180,
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ink",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 50, heightPt: 50 },
+      rotation: 270,
+      strokes: [
+        [
+          { xPt: 0, yPt: 0 },
+          { xPt: 10, yPt: 10 },
+        ],
+      ],
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    expect(restored.fields.map((f) => (f as OverlayField).rotation)).toEqual([
+      45, 90, 180, 270,
+    ]);
+  });
+
+  it("text overlay preserves fontFamily / textAlign / verticalAlign / backgroundColor / opacity", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "text",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 20 },
+      text: {
+        value: "styled",
+        fontSizePt: 10,
+        fontFamily: "Times-BoldItalic",
+        textAlign: "right",
+        verticalAlign: "bottom",
+        backgroundColor: { r: 1, g: 0.9, b: 0.8 },
+        opacity: 0.6,
+      },
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "text" }>;
+    expect(o.text.fontFamily).toBe("Times-BoldItalic");
+    expect(o.text.textAlign).toBe("right");
+    expect(o.text.verticalAlign).toBe("bottom");
+    expect(o.text.backgroundColor).toEqual({ r: 1, g: 0.9, b: 0.8 });
+    expect(o.text.opacity).toBe(0.6);
+  });
+
+  it("pre-upgrade text overlay JSON (no rotation, no new style fields) still loads", () => {
+    // Simulates a Template serialized before rotation / styling was added.
+    // All new fields are optional, so this must decode cleanly.
+    const json = JSON.stringify({
+      version: 1,
+      basePdfBase64: "",
+      metadata: {
+        pageCount: 1,
+        pages: [{ widthPt: 612, heightPt: 792 }],
+        hasAcroForm: false,
+      },
+      fields: [
+        {
+          id: "overlay:0",
+          source: "overlay",
+          kind: "text",
+          page: 0,
+          position: { xPt: 0, yPt: 0, widthPt: 50, heightPt: 12 },
+          text: { value: "legacy", fontSizePt: 10 },
+        },
+      ],
+    });
+    const restored = templateFromJSON(json);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "text" }>;
+    expect(o.text.value).toBe("legacy");
+    expect(o.rotation).toBeUndefined();
+    expect(o.text.fontFamily).toBeUndefined();
+    expect(o.text.opacity).toBeUndefined();
+  });
+
   it("cross overlay survives with and without `color`", async () => {
     const sdk = await loadFlat();
     sdk.addOverlay({

@@ -214,6 +214,102 @@ describe("shape overlays: create + generate + reparse", () => {
   });
 });
 
+describe("rotation + text styling round-trip", () => {
+  it("persists rotation on every overlay kind through generate()", async () => {
+    const sdk = await load();
+    // Cover every rotation-capable overlay kind to make sure the field
+    // flows through `createOverlayAnnotation` -> `applyBaseAnnotationProperties`
+    // -> PDFium and back out on the flattened output.
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "text",
+      page: 0,
+      position: { xPt: 100, yPt: 200, widthPt: 160, heightPt: 40 },
+      rotation: 45,
+      text: { value: "rotated text", fontSizePt: 14 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "image",
+      page: 0,
+      position: { xPt: 72, yPt: 300, widthPt: 60, heightPt: 60 },
+      rotation: 90,
+      image: {
+        bytes: loadFixture(FIXTURES.overlayImage),
+        mime: "image/png",
+      },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "rect",
+      page: 0,
+      position: { xPt: 200, yPt: 400, widthPt: 80, heightPt: 40 },
+      rotation: 30,
+      stroke: { r: 0, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ellipse",
+      page: 0,
+      position: { xPt: 300, yPt: 400, widthPt: 80, heightPt: 40 },
+      rotation: 60,
+      stroke: { r: 0, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "checkmark",
+      page: 0,
+      position: { xPt: 400, yPt: 400, widthPt: 24, heightPt: 24 },
+      rotation: 180,
+    });
+    const bytes = await sdk.generate();
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    // Snapshot state is still accessible — rotation survived the round-trip.
+    const fields = sdk
+      .getFields()
+      .filter((f) => f.source === "overlay") as OverlayField[];
+    const rotations = fields.map((f) => f.rotation);
+    expect(rotations).toEqual([45, 90, 30, 60, 180]);
+  });
+
+  it("round-trips FreeText styling (font family, alignment, opacity, background)", async () => {
+    const sdk = await load();
+    const id = sdk.addOverlay({
+      source: "overlay",
+      kind: "text",
+      page: 0,
+      position: { xPt: 72, yPt: 500, widthPt: 300, heightPt: 40 },
+      text: {
+        value: "styled text",
+        fontSizePt: 16,
+        color: { r: 0.2, g: 0.4, b: 0.6 },
+        fontFamily: "Times-Bold",
+        textAlign: "center",
+        verticalAlign: "middle",
+        backgroundColor: { r: 1, g: 1, b: 0.8 },
+        opacity: 0.5,
+      },
+    });
+    const bytes = await sdk.generate();
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    const f = sdk.getField(id) as OverlayText;
+    expect(f.text.fontFamily).toBe("Times-Bold");
+    expect(f.text.textAlign).toBe("center");
+    expect(f.text.verticalAlign).toBe("middle");
+    expect(f.text.opacity).toBe(0.5);
+    expect(f.text.backgroundColor).toEqual({ r: 1, g: 1, b: 0.8 });
+  });
+
+  it("rotation defaults to 0 when unset: omitting rotation matches pre-upgrade behavior", async () => {
+    const sdk = await load();
+    const id = sdk.addOverlay(sampleText(0));
+    const f = sdk.getField(id) as OverlayText;
+    expect(f.rotation).toBeUndefined();
+    const bytes = await sdk.generate();
+    expect(bytes.byteLength).toBeGreaterThan(0);
+  });
+});
+
 describe("generate: overlays", () => {
   it("produces a PDF whose content includes the overlay text (post-flatten)", async () => {
     const sdk = await load();
@@ -265,6 +361,35 @@ describe("generate: overlays", () => {
     });
     const bytes = await sdk.generate();
     expect(bytes.byteLength).toBeGreaterThan(0);
+  });
+
+  it("is idempotent: second generate() on the same sdk succeeds", async () => {
+    // Regression: flattening was previously done on `this.doc` in place,
+    // which consumed the annotations. A second generate() then rejected
+    // with PDFium error code 2 ("annotation not found"). We now flatten on
+    // a scratch doc.
+    const sdk = await load();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "text",
+      page: 0,
+      position: { xPt: 72, yPt: 700, widthPt: 200, heightPt: 20 },
+      text: { value: "idempotent", fontSizePt: 12 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "image",
+      page: 0,
+      position: { xPt: 72, yPt: 600, widthPt: 60, heightPt: 60 },
+      image: {
+        bytes: loadFixture(FIXTURES.overlayImage),
+        mime: "image/png",
+      },
+    });
+    const a = await sdk.generate();
+    const b = await sdk.generate();
+    expect(a.byteLength).toBe(b.byteLength);
+    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
   });
 
   it("diagnoses an overlay on a missing page", async () => {

@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2]
+
+### Added
+
+- Optional `rotation?: number` on every overlay kind (clockwise degrees,
+  defaults to 0). Maps to `PdfAnnotationObjectBase.rotation` so the user's
+  viewer rotation on stamps / images / shapes / free-text now survives
+  `generate()`. Fixes the "rotated stamp loses rotation on download" bug.
+- Optional text styling on `OverlayText.text`, mirroring every property the
+  EmbedPDF FreeText sidebar exposes that wasn't previously round-tripping:
+  - `fontFamily?: OverlayFontFamily` — 12 PDFium built-in fonts
+    (Helvetica / Courier / Times, with bold / oblique variants).
+  - `textAlign?: "left" | "center" | "right"` (`OverlayTextAlign`).
+  - `verticalAlign?: "top" | "middle" | "bottom"` (`OverlayVerticalAlign`).
+  - `backgroundColor?: RGB` — fill of the free-text rect; omitted = transparent.
+  - `opacity?: number` — 0..1, defaults to 1.
+    All fields are optional; defaults match the viewer's freeText tool defaults,
+    so omitting them produces identical output to 0.4.1.
+- Template JSON v1 (unchanged schema version) now serializes / deserializes
+  every new field. Legacy templates that predate the addition still load —
+  all new keys are skipped when absent.
+
+### Skipped (documented gaps)
+
+- Stamp opacity. The viewer's stamp tool doesn't expose opacity and the
+  PDFium engine's `addStampContent` doesn't call `setAnnotationOpacity`,
+  so there's no round-trip path today.
+- Shape `strokeStyle` (SOLID / DASHED / CLOUDY). Not exposed in the snippet
+  sidebar we're using; would be a dead field.
+
+## [0.4.1]
+
+### Fixed
+
+- `generate()` is idempotent again. The previous implementation flattened
+  overlay annotations directly on the live document, which consumed them —
+  a second `generate()` call then rejected with PDFium error
+  `{code: 2, message: "annotation not found"}`. The live document is now
+  snapshotted into a scratch PDFium document via `saveAsCopy` +
+  `openDocumentBuffer`; flattening happens on the scratch, so subsequent
+  `generate()` / `updateOverlay` / `removeOverlay` calls keep working.
+  Test: `test/overlay.test.ts → "is idempotent"`.
+
 ## [0.4.0]
 
 ### Added

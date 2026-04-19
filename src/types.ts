@@ -113,12 +113,44 @@ export type RGB = { r: number; g: number; b: number };
 /** A single point in PDF native coordinates (points, bottom-left origin). */
 export type Point = { xPt: number; yPt: number };
 
+/**
+ * The subset of `PdfStandardFont` (from `@embedpdf/models`) we expose on
+ * overlay text. Named in the SDK so consumers don't need a peer import just
+ * to pick a font. Mirrors PDFium's built-in 14-font set (minus `Unknown`,
+ * `Symbol`, and `ZapfDingbats` which we reserve for internal glyph overlays).
+ */
+export type OverlayFontFamily =
+  | "Courier"
+  | "Courier-Bold"
+  | "Courier-BoldOblique"
+  | "Courier-Oblique"
+  | "Helvetica"
+  | "Helvetica-Bold"
+  | "Helvetica-BoldOblique"
+  | "Helvetica-Oblique"
+  | "Times-Roman"
+  | "Times-Bold"
+  | "Times-BoldItalic"
+  | "Times-Italic";
+
+/** Horizontal text alignment for free-text overlays. */
+export type OverlayTextAlign = "left" | "center" | "right";
+
+/** Vertical text alignment for free-text overlays. */
+export type OverlayVerticalAlign = "top" | "middle" | "bottom";
+
 type BaseOverlay<K extends OverlayKind> = {
   id: string;
   source: "overlay";
   kind: K;
   page: number;
   position: { xPt: number; yPt: number; widthPt: number; heightPt: number };
+  /**
+   * Clockwise rotation in degrees applied around the overlay's center.
+   * `position` remains the axis-aligned bounding box after rotation. Matches
+   * PDFium's `PdfAnnotationObjectBase.rotation`. Defaults to 0 when omitted.
+   */
+  rotation?: number;
 };
 
 export type OverlayText = BaseOverlay<"text"> & {
@@ -126,8 +158,18 @@ export type OverlayText = BaseOverlay<"text"> & {
     value: string;
     /** Size in PDF points. */
     fontSizePt: number;
-    /** 0..1 RGB. Defaults to black when omitted. */
+    /** Font color. 0..1 RGB. Defaults to black when omitted. */
     color?: RGB;
+    /** Font family. Defaults to Helvetica. */
+    fontFamily?: OverlayFontFamily;
+    /** Horizontal alignment. Defaults to "left". */
+    textAlign?: OverlayTextAlign;
+    /** Vertical alignment within the rect. Defaults to "top". */
+    verticalAlign?: OverlayVerticalAlign;
+    /** Background fill color. Omit for transparent background. */
+    backgroundColor?: RGB;
+    /** Opacity 0..1. Defaults to 1 when omitted. */
+    opacity?: number;
   };
 };
 

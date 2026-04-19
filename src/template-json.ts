@@ -20,6 +20,7 @@ import type {
   OverlayCross,
   OverlayEllipse,
   OverlayField,
+  OverlayFontFamily,
   OverlayImage,
   OverlayInk,
   OverlayLine,
@@ -27,6 +28,8 @@ import type {
   OverlayPolyline,
   OverlayRect,
   OverlayText,
+  OverlayTextAlign,
+  OverlayVerticalAlign,
   Point,
   RadioField,
   RadioWidget,
@@ -130,10 +133,16 @@ type SerializedOverlayText = {
   kind: "text";
   page: number;
   position: Position;
+  rotation?: number;
   text: {
     value: string;
     fontSizePt: number;
     color?: SerializedRGB;
+    fontFamily?: OverlayFontFamily;
+    textAlign?: OverlayTextAlign;
+    verticalAlign?: OverlayVerticalAlign;
+    backgroundColor?: SerializedRGB;
+    opacity?: number;
   };
 };
 
@@ -143,6 +152,7 @@ type SerializedOverlayImage = {
   kind: "image";
   page: number;
   position: Position;
+  rotation?: number;
   image: {
     bytesBase64: string;
     mime: "image/png" | "image/jpeg";
@@ -155,6 +165,7 @@ type SerializedOverlayCheckmark = {
   kind: "checkmark";
   page: number;
   position: Position;
+  rotation?: number;
   color?: SerializedRGB;
 };
 
@@ -164,6 +175,7 @@ type SerializedOverlayCross = {
   kind: "cross";
   page: number;
   position: Position;
+  rotation?: number;
   color?: SerializedRGB;
 };
 
@@ -175,6 +187,7 @@ type SerializedOverlayRect = {
   kind: "rect";
   page: number;
   position: Position;
+  rotation?: number;
   stroke?: SerializedRGB;
   strokeWidthPt?: number;
   fill?: SerializedRGB;
@@ -187,6 +200,7 @@ type SerializedOverlayEllipse = {
   kind: "ellipse";
   page: number;
   position: Position;
+  rotation?: number;
   stroke?: SerializedRGB;
   strokeWidthPt?: number;
   fill?: SerializedRGB;
@@ -199,6 +213,7 @@ type SerializedOverlayLine = {
   kind: "line";
   page: number;
   position: Position;
+  rotation?: number;
   start: SerializedPoint;
   end: SerializedPoint;
   stroke?: SerializedRGB;
@@ -213,6 +228,7 @@ type SerializedOverlayPolyline = {
   kind: "polyline";
   page: number;
   position: Position;
+  rotation?: number;
   points: SerializedPoint[];
   stroke?: SerializedRGB;
   strokeWidthPt?: number;
@@ -225,6 +241,7 @@ type SerializedOverlayPolygon = {
   kind: "polygon";
   page: number;
   position: Position;
+  rotation?: number;
   points: SerializedPoint[];
   stroke?: SerializedRGB;
   strokeWidthPt?: number;
@@ -238,6 +255,7 @@ type SerializedOverlayInk = {
   kind: "ink";
   page: number;
   position: Position;
+  rotation?: number;
   strokes: SerializedPoint[][];
   stroke?: SerializedRGB;
   strokeWidthPt?: number;
@@ -399,13 +417,29 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
           fontSizePt: field.text.fontSizePt,
         },
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.text.color !== undefined) {
         out.text.color = copyRGB(field.text.color);
       }
+      if (field.text.fontFamily !== undefined) {
+        out.text.fontFamily = field.text.fontFamily;
+      }
+      if (field.text.textAlign !== undefined) {
+        out.text.textAlign = field.text.textAlign;
+      }
+      if (field.text.verticalAlign !== undefined) {
+        out.text.verticalAlign = field.text.verticalAlign;
+      }
+      if (field.text.backgroundColor !== undefined) {
+        out.text.backgroundColor = copyRGB(field.text.backgroundColor);
+      }
+      if (field.text.opacity !== undefined) {
+        out.text.opacity = field.text.opacity;
+      }
       return out;
     }
-    case "image":
-      return {
+    case "image": {
+      const out: SerializedOverlayImage = {
         id: field.id,
         source: "overlay",
         kind: "image",
@@ -416,6 +450,9 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
           mime: field.image.mime,
         },
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
+      return out;
+    }
     case "checkmark": {
       const out: SerializedOverlayCheckmark = {
         id: field.id,
@@ -424,6 +461,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         page: field.page,
         position: copyPosition(field.position),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.color !== undefined) out.color = copyRGB(field.color);
       return out;
     }
@@ -435,6 +473,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         page: field.page,
         position: copyPosition(field.position),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.color !== undefined) out.color = copyRGB(field.color);
       return out;
     }
@@ -446,6 +485,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         page: field.page,
         position: copyPosition(field.position),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -461,6 +501,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         page: field.page,
         position: copyPosition(field.position),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -478,6 +519,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         start: copyPoint(field.start),
         end: copyPoint(field.end),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -494,6 +536,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         position: copyPosition(field.position),
         points: field.points.map(copyPoint),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -509,6 +552,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         position: copyPosition(field.position),
         points: field.points.map(copyPoint),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -525,6 +569,7 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         position: copyPosition(field.position),
         strokes: field.strokes.map((s) => s.map(copyPoint)),
       };
+      if (field.rotation !== undefined) out.rotation = field.rotation;
       if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
       if (field.strokeWidthPt !== undefined)
         out.strokeWidthPt = field.strokeWidthPt;
@@ -779,6 +824,7 @@ function readOverlayField(
   const page = requireNumber(obj, "page", context);
   const position = readPosition(obj, context);
   const kind = requireString(obj, "kind", context);
+  const rotation = readOptionalRotation(obj, context);
   const base = {
     id,
     source: "overlay" as const,
@@ -796,8 +842,39 @@ function readOverlayField(
           fontSizePt: requireNumber(t, "fontSizePt", `${context}.text`),
         },
       };
+      if (rotation !== undefined) text.rotation = rotation;
       if ("color" in t && t.color !== undefined) {
         text.text.color = readRGB(t.color, `${context}.text.color`);
+      }
+      if ("fontFamily" in t && t.fontFamily !== undefined) {
+        text.text.fontFamily = readFontFamily(
+          t.fontFamily,
+          `${context}.text.fontFamily`,
+        );
+      }
+      if ("textAlign" in t && t.textAlign !== undefined) {
+        text.text.textAlign = readTextAlign(
+          t.textAlign,
+          `${context}.text.textAlign`,
+        );
+      }
+      if ("verticalAlign" in t && t.verticalAlign !== undefined) {
+        text.text.verticalAlign = readVerticalAlign(
+          t.verticalAlign,
+          `${context}.text.verticalAlign`,
+        );
+      }
+      if ("backgroundColor" in t && t.backgroundColor !== undefined) {
+        text.text.backgroundColor = readRGB(
+          t.backgroundColor,
+          `${context}.text.backgroundColor`,
+        );
+      }
+      if ("opacity" in t && t.opacity !== undefined) {
+        text.text.opacity = requireNumberVal(
+          t.opacity,
+          `${context}.text.opacity`,
+        );
       }
       return text;
     }
@@ -825,10 +902,12 @@ function readOverlayField(
         kind: "image",
         image: { bytes, mime },
       };
+      if (rotation !== undefined) image.rotation = rotation;
       return image;
     }
     case "checkmark": {
       const cm: OverlayCheckmark = { ...base, kind: "checkmark" };
+      if (rotation !== undefined) cm.rotation = rotation;
       if ("color" in obj && obj.color !== undefined) {
         cm.color = readRGB(obj.color, `${context}.color`);
       }
@@ -836,6 +915,7 @@ function readOverlayField(
     }
     case "cross": {
       const cr: OverlayCross = { ...base, kind: "cross" };
+      if (rotation !== undefined) cr.rotation = rotation;
       if ("color" in obj && obj.color !== undefined) {
         cr.color = readRGB(obj.color, `${context}.color`);
       }
@@ -843,11 +923,13 @@ function readOverlayField(
     }
     case "rect": {
       const r: OverlayRect = { ...base, kind: "rect" };
+      if (rotation !== undefined) r.rotation = rotation;
       applyShapeStyle(r, obj, context);
       return r;
     }
     case "ellipse": {
       const e: OverlayEllipse = { ...base, kind: "ellipse" };
+      if (rotation !== undefined) e.rotation = rotation;
       applyShapeStyle(e, obj, context);
       return e;
     }
@@ -858,6 +940,7 @@ function readOverlayField(
       );
       const end = readPoint(requireKey(obj, "end", context), `${context}.end`);
       const line: OverlayLine = { ...base, kind: "line", start, end };
+      if (rotation !== undefined) line.rotation = rotation;
       if ("stroke" in obj && obj.stroke !== undefined) {
         line.stroke = readRGB(obj.stroke, `${context}.stroke`);
       }
@@ -884,6 +967,7 @@ function readOverlayField(
         `${context}.points`,
       );
       const p: OverlayPolyline = { ...base, kind: "polyline", points: pts };
+      if (rotation !== undefined) p.rotation = rotation;
       if ("stroke" in obj && obj.stroke !== undefined) {
         p.stroke = readRGB(obj.stroke, `${context}.stroke`);
       }
@@ -904,6 +988,7 @@ function readOverlayField(
         `${context}.points`,
       );
       const p: OverlayPolygon = { ...base, kind: "polygon", points: pts };
+      if (rotation !== undefined) p.rotation = rotation;
       applyShapeStyle(p, obj, context);
       return p;
     }
@@ -916,6 +1001,7 @@ function readOverlayField(
         readPointArray(s, `${context}.strokes[${i}]`),
       );
       const ink: OverlayInk = { ...base, kind: "ink", strokes };
+      if (rotation !== undefined) ink.rotation = rotation;
       if ("stroke" in obj && obj.stroke !== undefined) {
         ink.stroke = readRGB(obj.stroke, `${context}.stroke`);
       }
@@ -941,6 +1027,56 @@ function readOverlayField(
     default:
       return fail(`${context}.kind "${kind}" is not a known overlay kind.`);
   }
+}
+
+function readOptionalRotation(
+  obj: Record<string, unknown>,
+  context: string,
+): number | undefined {
+  if (!("rotation" in obj) || obj.rotation === undefined) return undefined;
+  return requireNumberVal(obj.rotation, `${context}.rotation`);
+}
+
+const FONT_FAMILIES: readonly OverlayFontFamily[] = [
+  "Courier",
+  "Courier-Bold",
+  "Courier-BoldOblique",
+  "Courier-Oblique",
+  "Helvetica",
+  "Helvetica-Bold",
+  "Helvetica-BoldOblique",
+  "Helvetica-Oblique",
+  "Times-Roman",
+  "Times-Bold",
+  "Times-BoldItalic",
+  "Times-Italic",
+];
+
+function readFontFamily(value: unknown, context: string): OverlayFontFamily {
+  if (typeof value !== "string") fail(`${context} must be a string.`);
+  if (!FONT_FAMILIES.includes(value as OverlayFontFamily)) {
+    fail(
+      `${context} must be one of ${FONT_FAMILIES.join(", ")}; got ${JSON.stringify(value)}.`,
+    );
+  }
+  return value as OverlayFontFamily;
+}
+
+function readTextAlign(value: unknown, context: string): OverlayTextAlign {
+  if (value !== "left" && value !== "center" && value !== "right") {
+    fail(`${context} must be "left", "center", or "right".`);
+  }
+  return value;
+}
+
+function readVerticalAlign(
+  value: unknown,
+  context: string,
+): OverlayVerticalAlign {
+  if (value !== "top" && value !== "middle" && value !== "bottom") {
+    fail(`${context} must be "top", "middle", or "bottom".`);
+  }
+  return value;
 }
 
 function requireNumberVal(value: unknown, context: string): number {

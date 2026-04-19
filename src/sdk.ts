@@ -25,6 +25,7 @@ import type {
   Field,
   OverlayEllipse,
   OverlayField,
+  OverlayFontFamily,
   OverlayImage,
   OverlayInk,
   OverlayLine,
@@ -32,6 +33,8 @@ import type {
   OverlayPolyline,
   OverlayRect,
   OverlayText,
+  OverlayTextAlign,
+  OverlayVerticalAlign,
   ParseDiagnostic,
   Point,
   RGB,
@@ -170,6 +173,82 @@ function sdkPointToPdfPoint(p: Point, pageHeightPt: number): Position {
 function rgbToTransparent(c: RGB | undefined): string {
   if (!c) return "transparent";
   return rgbToHex(c);
+}
+
+/**
+ * Map the SDK's typed font-family token to PDFium's `PdfStandardFont` enum.
+ * Defaults to `Helvetica` when omitted — matches the viewer's default so
+ * generate() produces identical output when the user never touches the
+ * font-family picker.
+ */
+function fontFamilyToPdf(
+  family: OverlayFontFamily | undefined,
+): PdfStandardFont {
+  switch (family) {
+    case "Courier":
+      return PdfStandardFont.Courier;
+    case "Courier-Bold":
+      return PdfStandardFont.Courier_Bold;
+    case "Courier-BoldOblique":
+      return PdfStandardFont.Courier_BoldOblique;
+    case "Courier-Oblique":
+      return PdfStandardFont.Courier_Oblique;
+    case "Helvetica":
+      return PdfStandardFont.Helvetica;
+    case "Helvetica-Bold":
+      return PdfStandardFont.Helvetica_Bold;
+    case "Helvetica-BoldOblique":
+      return PdfStandardFont.Helvetica_BoldOblique;
+    case "Helvetica-Oblique":
+      return PdfStandardFont.Helvetica_Oblique;
+    case "Times-Roman":
+      return PdfStandardFont.Times_Roman;
+    case "Times-Bold":
+      return PdfStandardFont.Times_Bold;
+    case "Times-BoldItalic":
+      return PdfStandardFont.Times_BoldItalic;
+    case "Times-Italic":
+      return PdfStandardFont.Times_Italic;
+    default:
+      return PdfStandardFont.Helvetica;
+  }
+}
+
+function textAlignToPdf(align: OverlayTextAlign | undefined): PdfTextAlignment {
+  switch (align) {
+    case "center":
+      return PdfTextAlignment.Center;
+    case "right":
+      return PdfTextAlignment.Right;
+    case "left":
+    default:
+      return PdfTextAlignment.Left;
+  }
+}
+
+function verticalAlignToPdf(
+  align: OverlayVerticalAlign | undefined,
+): PdfVerticalAlignment {
+  switch (align) {
+    case "middle":
+      return PdfVerticalAlignment.Middle;
+    case "bottom":
+      return PdfVerticalAlignment.Bottom;
+    case "top":
+    default:
+      return PdfVerticalAlignment.Top;
+  }
+}
+
+/**
+ * Normalize a rotation to the 0..359 range PDFium accepts. `undefined`
+ * collapses to 0 so omitted rotation is lossless. Non-finite values and
+ * multiples of 360 collapse to 0 as well.
+ */
+function normalizeRotation(rotation: number | undefined): number {
+  if (rotation === undefined || !Number.isFinite(rotation)) return 0;
+  const r = rotation % 360;
+  return r < 0 ? r + 360 : r;
 }
 
 /**
@@ -389,8 +468,11 @@ export class PdfSdk {
    *
    *   1. Every pending engine operation (field set, overlay create / update /
    *      delete) is awaited.
-   *   2. Each overlay annotation is flattened into the page content stream so
-   *      the output renders identically in every PDF viewer.
+   *   2. `this.doc` is snapshotted into a scratch PDFium document; every
+   *      overlay annotation is flattened on the scratch so the output renders
+   *      identically in every PDF viewer. Flattening on the live doc would
+   *      consume the annotations — a second `generate()` call would then
+   *      reject with "annotation not found".
    *   3. Metadata dates are pinned to a fixed timestamp for byte-deterministic
    *      output.
    */
@@ -405,28 +487,66 @@ export class PdfSdk {
       })
       .toPromise();
 
-    for (const [, { annotation, page }] of this.overlayAnnotations) {
-      await this.engine
-        .flattenAnnotation(this.doc, page, annotation)
-        .toPromise();
+    // Short path: nothing to flatten, save the live doc directly.
+    if (this.overlayAnnotations.size === 0) {
+      const widgetNms = await this.collectWidgetNms(this.doc);
+      const ab = await this.engine.saveAsCopy(this.doc).toPromise();
+      return normalizeNMs(new Uint8Array(ab), widgetNms);
     }
 
-    // Collect every widget NM that PDFium will embed in the output so we can
-    // rewrite them with stable ids after save. PDFium synthesizes a random
-    // v4 UUID for any widget that didn't carry an `/NM` in the source PDF
-    // (see EmbedPDF direct engine: `getPageAnnoWidgets` → setAnnotString NM).
-    // Without this step, fresh processes produce different bytes for the
-    // same template.
-    const widgetNms: string[] = [];
-    for (const page of this.doc.pages) {
+    // Snapshot the live doc into bytes and reopen as a scratch doc. Flatten
+    // on the scratch so `this.doc` retains every overlay annotation for
+    // subsequent mutations / generates.
+    const snapshot = await this.engine.saveAsCopy(this.doc).toPromise();
+    const scratchId = `fillapp-sdk-scratch-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const scratch = await this.engine
+      .openDocumentBuffer({ id: scratchId, content: snapshot })
+      .toPromise();
+
+    try {
+      // Our overlay annotations carry stable UUIDs — find matching
+      // annotations on the scratch doc by id and flatten each.
+      const wantedIds = new Set(
+        Array.from(this.overlayAnnotations.keys()).map(
+          overlayIdToAnnotationUuid,
+        ),
+      );
+      for (const page of scratch.pages) {
+        const annotations = await this.engine
+          .getPageAnnotations(scratch, page)
+          .toPromise();
+        for (const a of annotations) {
+          if (wantedIds.has(a.id)) {
+            await this.engine.flattenAnnotation(scratch, page, a).toPromise();
+          }
+        }
+      }
+
+      const widgetNms = await this.collectWidgetNms(scratch);
+      const ab = await this.engine.saveAsCopy(scratch).toPromise();
+      return normalizeNMs(new Uint8Array(ab), widgetNms);
+    } finally {
+      await this.engine.closeDocument(scratch).toPromise();
+    }
+  }
+
+  /**
+   * Collect every widget NM across a document's pages. PDFium synthesizes a
+   * random v4 UUID for any widget that didn't carry an `/NM` in the source
+   * PDF; we normalize these in the output bytes so repeat saves of the same
+   * template are byte-identical.
+   */
+  private async collectWidgetNms(doc: PdfDocumentObject): Promise<string[]> {
+    const out: string[] = [];
+    for (const page of doc.pages) {
       const widgets = await this.engine
-        .getPageAnnoWidgets(this.doc, page)
+        .getPageAnnoWidgets(doc, page)
         .toPromise();
-      for (const w of widgets) widgetNms.push(w.id);
+      for (const w of widgets) out.push(w.id);
     }
-
-    const ab = await this.engine.saveAsCopy(this.doc).toPromise();
-    return normalizeNMs(new Uint8Array(ab), widgetNms);
+    return out;
   }
 
   // ---- private mutation helpers ------------------------------------------
@@ -671,13 +791,17 @@ export class PdfSdk {
           id: annotationId,
           pageIndex: field.page,
           rect,
+          rotation: normalizeRotation(field.rotation),
           contents: field.text.value,
-          fontFamily: PdfStandardFont.Helvetica,
+          fontFamily: fontFamilyToPdf(field.text.fontFamily),
           fontSize: field.text.fontSizePt,
           fontColor: rgbToHex(field.text.color),
-          textAlign: PdfTextAlignment.Left,
-          verticalAlign: PdfVerticalAlignment.Top,
-          opacity: 1,
+          textAlign: textAlignToPdf(field.text.textAlign),
+          verticalAlign: verticalAlignToPdf(field.text.verticalAlign),
+          opacity: field.text.opacity ?? 1,
+          color: field.text.backgroundColor
+            ? rgbToHex(field.text.backgroundColor)
+            : "transparent",
         };
         await this.engine
           .createPageAnnotation(this.doc, page, annotation)
@@ -696,6 +820,7 @@ export class PdfSdk {
           rect,
           "\u2714", // HEAVY CHECK MARK
           field.color,
+          field.rotation,
         );
         await this.engine
           .createPageAnnotation(this.doc, page, annotation)
@@ -710,6 +835,7 @@ export class PdfSdk {
           rect,
           "\u2718", // HEAVY BALLOT X
           field.color,
+          field.rotation,
         );
         await this.engine
           .createPageAnnotation(this.doc, page, annotation)
@@ -803,6 +929,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       flags: [],
       color: rgbToTransparent(field.fill),
       strokeColor: rgbToHex(field.stroke),
@@ -823,6 +950,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       flags: [],
       color: rgbToTransparent(field.fill),
       strokeColor: rgbToHex(field.stroke),
@@ -843,6 +971,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       linePoints: {
         start: sdkPointToPdfPoint(field.start, pageHeightPt),
         end: sdkPointToPdfPoint(field.end, pageHeightPt),
@@ -873,6 +1002,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       vertices: field.points.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
       color: "transparent",
       strokeColor: rgbToHex(field.stroke),
@@ -893,6 +1023,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       vertices: field.points.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
       color: rgbToTransparent(field.fill),
       strokeColor: rgbToHex(field.stroke),
@@ -913,6 +1044,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       intent: field.intent === "highlight" ? "InkHighlight" : undefined,
       inkList: field.strokes.map((stroke) => ({
         points: stroke.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
@@ -929,6 +1061,7 @@ export class PdfSdk {
     rect: PdfAnnotationObject["rect"],
     glyph: string,
     color: RGB | undefined,
+    rotation: number | undefined,
   ): PdfFreeTextAnnoObject {
     // ZapfDingbats is one of the 14 standard PDF fonts (always available).
     // U+2714 / U+2718 are in its built-in glyph table, so no font embedding
@@ -942,6 +1075,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex,
       rect,
+      rotation: normalizeRotation(rotation),
       contents: glyph,
       fontFamily: PdfStandardFont.ZapfDingbats,
       fontSize,
@@ -963,6 +1097,7 @@ export class PdfSdk {
       id: annotationId,
       pageIndex: field.page,
       rect,
+      rotation: normalizeRotation(field.rotation),
       contents: "",
     };
     // PDFium copies the image bytes out, so the ArrayBuffer we hand over can
