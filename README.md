@@ -3,22 +3,26 @@
 [![npm](https://img.shields.io/npm/v/@fillapp/pdf-sdk.svg)](https://www.npmjs.com/package/@fillapp/pdf-sdk)
 [![license](https://img.shields.io/npm/l/@fillapp/pdf-sdk.svg)](LICENSE)
 
-Isomorphic PDF form-filling SDK. One package, one API, runs identically in Node and modern browsers. Pure JavaScript — no native bindings.
+Isomorphic PDF form-filling SDK. One package, one API, runs in Node and modern browsers. Pure JavaScript, no native bindings.
 
-> **Status:** 0.2.0 ships full fill + generate + overlay support with a cross-runtime byte-equality contract. API surface is stabilizing; see the [roadmap](#roadmap) for what's left before 1.0.
+## Status
+
+This is a new project. The API is not yet stable and will change before 1.0. Expect breaking changes between minor versions on the `0.x` line. If you pin a version and read the [CHANGELOG](CHANGELOG.md) before upgrading, it is usable today for AcroForm fill and simple overlays.
+
+Feedback, bug reports, and PRs are welcome.
 
 ## What works today
 
 - Load a PDF from `Uint8Array`, `ArrayBuffer`, `Blob`, or base64 string.
 - Parse every native AcroForm field (text, checkbox, radio, dropdown, listbox), including radio groups with per-widget positions and hierarchical field names.
-- **Fill field values** via `setFieldValue(id, value)` with variant-correct validation, `maxLength` truncation, and rejection of unknown options.
-- **Add overlay content** — text (with size + RGB color), PNG/JPEG images, vector checkmark and cross glyphs at arbitrary PDF coordinates, on flat PDFs or on top of AcroForm output.
-- **Generate output** — `generate()` preserves the AcroForm so downstream viewers (Acrobat, Chrome, Firefox) continue to render and edit the form.
-- **Bundled Noto Sans subset** covering Latin, Latin Extended, and Cyrillic — non-Latin field values and overlay text render out of the box. Pass `{ font: ... }` to ship your own.
-- **Byte-for-byte determinism** — Node and browser produce identical output bytes for the same `Template` (asserted by the test suite).
-- Refuse encrypted documents by default (`allowEncrypted: true` to opt in).
-- Structured diagnostics channel — parse, fill, and generate issues surface without silent swallowing.
-- Visual regression suite: every generate path produces a committed PNG baseline rendered through `pdfjs-dist`.
+- Fill values via `setFieldValue(id, value)` with variant-correct validation, `maxLength` truncation, and rejection of unknown options.
+- Draw overlay content: text with size and RGB color, PNG or JPEG images, vector checkmark and cross glyphs at arbitrary PDF coordinates. Works on flat PDFs or on top of AcroForm output.
+- `generate()` preserves the AcroForm so Acrobat, Chrome, and Firefox continue to render and edit the form.
+- Bundled Noto Sans subset (Latin, Latin Extended, Cyrillic). Pass `{ font }` to ship your own for other scripts.
+- Byte-for-byte deterministic output across Node and browser for the same `Template`.
+- Encrypted documents are refused by default (`{ allowEncrypted: true }` to opt in).
+- Structured diagnostics channel for non-fatal parse, fill, and generate issues.
+- Visual regression suite renders every generate path through `pdfjs-dist` and diffs committed PNG baselines.
 
 ## Install
 
@@ -35,32 +39,36 @@ import { PdfSdk } from "@fillapp/pdf-sdk";
 
 const sdk = await PdfSdk.load(pdfBytes); // Uint8Array | ArrayBuffer | Blob | base64 string
 
-// Inspect the parsed form.
 for (const field of sdk.getFields()) {
-  console.log(field.id, field.source, field.source === "acroform" ? field.type : field.kind);
+  console.log(
+    field.id,
+    field.source,
+    field.source === "acroform" ? field.type : field.kind,
+  );
 }
 
-// Fill values. Value shape must match the field variant.
 sdk.setFieldValue("acro:plain_text:0", "Jane Doe");
 sdk.setFieldValue("acro:single_check:0", true);
 sdk.setFieldValue("acro:shipping:0", "express");
 sdk.setFieldValue("acro:country:0", "Armenia");
 sdk.setFieldValue("acro:fruit_multi:0", ["Apple", "Cherry"]);
 
-// Output keeps the AcroForm editable.
 const filled = await sdk.generate();
 ```
 
 ### Overlay content
 
 ```ts
-// Draw overlay text, images, and glyphs at any PDF-point coordinate.
 sdk.addOverlay({
   source: "overlay",
   kind: "text",
   page: 0,
   position: { xPt: 72, yPt: 680, widthPt: 400, heightPt: 20 },
-  text: { value: "Signed on 2026-04-18", fontSizePt: 12, color: { r: 0, g: 0, b: 0 } },
+  text: {
+    value: "Signed on 2026-04-18",
+    fontSizePt: 12,
+    color: { r: 0, g: 0, b: 0 },
+  },
 });
 
 sdk.addOverlay({
@@ -94,7 +102,7 @@ Kinds surfaced today: `no-widgets`, `orphan-widget`, `value-extraction-failed`, 
 
 ## The `Template` shape
 
-`Template` is plain JSON. Backend and frontend exchange it verbatim — no translation layer.
+`Template` is plain JSON. Backend and frontend exchange it verbatim, no translation layer.
 
 ```ts
 type Template = {
@@ -108,7 +116,7 @@ type Template = {
 };
 ```
 
-Coordinates are always PDF points, bottom-left origin. Unit-conversion helpers: `ptToMm`, `mmToPt`, `pxToPt`, `ptToPx`, `flipY` — either from the main entry or from `@fillapp/pdf-sdk/utils` for a smaller import (no pdf-lib dependency pulled in).
+Coordinates are PDF points, bottom-left origin. Conversion helpers (`ptToMm`, `mmToPt`, `pxToPt`, `ptToPx`, `flipY`) are available from the main entry or from `@fillapp/pdf-sdk/utils` for a smaller import that does not pull in pdf-lib.
 
 ## API
 
@@ -140,13 +148,37 @@ class PdfSdk {
 }
 ```
 
-All getters return independent copies — mutating them does not affect the SDK instance.
+All getters return independent copies. Mutating them does not affect the SDK instance.
 
 ## Roadmap
 
-- Cloudflare Workers smoke test in CI.
-- CI-generated Linux visual baselines (current committed baselines are darwin).
-- Publish to npm.
+Rough priority order. The 0.x line will keep moving until the must-haves ship.
+
+### Must-have before 1.0
+
+- **Reliable rendering across all viewers.** Today `generate()` sets `/NeedAppearances true`, which Acrobat, Chrome, Firefox, and pdf.js honor. iOS Preview, some print pipelines, and PDF-to-image rasterizers do not, and will show filled text and checkboxes as blank. Plan: regenerate appearance streams for text and checkbox fields using the bundled font so the output renders everywhere. Radios, dropdowns, and listboxes stay on the flag path.
+- **Batch fill.** `setFieldValues(values)` in a single call, with unknown ids reported as diagnostics instead of throwing so a partial fill is not aborted.
+- **Template serialization.** `templateToJSON(template)` and `templateFromJSON(json)` that base64 the `basePdf` so the whole `Template` survives a JSON round-trip. Needed to persist forms server-side and rehydrate in the browser.
+- **Per-field font-size override** when the template's Default Appearance is too large for the value. Probably `setFieldValue(id, value, { fontSizePt })`.
+- **Real password-protected PDFs.** Today `allowEncrypted: true` opens the file structurally but leaves field streams unreadable. Add a `{ password }` decryption path.
+- **Multi-font fallback chain** for mixed-script documents. Accept `fonts: Uint8Array[]` on `GenerateOptions` and fall back in order per glyph.
+- **Overlay text styling.** Font family, bold, italic, alignment, rotation, multiline wrap. Needed for legal forms that expect centered names or rotated margin notes.
+- **Overlay image extras.** Opacity, aspect-fit, rotation. Signature stamps need aspect-preserve.
+- **`clearFieldValue` and `resetForm`.** Ergonomics.
+- **PDF metadata on `generate()`.** Optional title, author, producer, pdfVersion.
+- **CI visual regression job** with committed Linux baselines alongside the current darwin ones.
+- **Cloudflare Workers smoke test in CI** to back the isomorphic claim for Workers.
+- **Code of conduct, issue and PR templates.**
+
+### Explicitly out of scope
+
+- XFA forms. If we see one, we flag it and degrade to the AcroForm fallback.
+- True digital signatures (PKI, certificates, timestamping, long-term validation).
+- Execution of PDF-embedded JavaScript actions.
+- OCR on scanned pages.
+- Page split, merge, reorder, compression, or format conversion.
+- Rendering and viewing PDFs. Use `pdf.js` or similar on top.
+- Real-time collaboration. `Template` is plain JSON; layer whatever sync model you want on top.
 
 ## Development
 
@@ -159,11 +191,13 @@ npm test
 npm run test:coverage
 npm run build
 
-# Visual regression + cross-runtime determinism (requires Playwright browsers once):
+# Visual regression and cross-runtime determinism (requires Playwright browsers once):
 npx playwright install chromium
 npm run test:visual          # diff against committed baselines
 npm run test:visual:update   # refresh baselines after an intentional change
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full PR checklist.
 
 ## License
 
