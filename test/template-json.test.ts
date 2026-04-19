@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  PdfSdk,
+  type PdfSdk,
   templateFromJSON,
   templateToJSON,
   type AcroFormField,
@@ -12,7 +12,7 @@ import {
   type Template,
   type TextField,
 } from "../src/index.js";
-import { FIXTURES, loadFixture } from "./helpers/fixtures.js";
+import { FIXTURES, loadFixture, loadSdk } from "./helpers/fixtures.js";
 
 /**
  * Round-trip tests for `templateToJSON` / `templateFromJSON`. The contract is
@@ -28,13 +28,13 @@ import { FIXTURES, loadFixture } from "./helpers/fixtures.js";
  */
 
 async function loadF1040(): Promise<PdfSdk> {
-  return PdfSdk.load(loadFixture(FIXTURES.f1040));
+  return loadSdk(FIXTURES.f1040);
 }
 async function loadChoices(): Promise<PdfSdk> {
-  return PdfSdk.load(loadFixture(FIXTURES.choices));
+  return loadSdk(FIXTURES.choices);
 }
 async function loadFlat(): Promise<PdfSdk> {
-  return PdfSdk.load(loadFixture(FIXTURES.flat));
+  return loadSdk(FIXTURES.flat);
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -78,7 +78,7 @@ describe("templateToJSON / templateFromJSON: happy-path round-trips", () => {
     expect(bytesEqual(restored.basePdf, original.basePdf)).toBe(true);
   });
 
-  it("round-trips a template with all four overlay kinds", async () => {
+  it("round-trips a template with every overlay kind", async () => {
     const sdk = await loadFlat();
     sdk.addOverlay({
       source: "overlay",
@@ -113,6 +113,72 @@ describe("templateToJSON / templateFromJSON: happy-path round-trips", () => {
       page: 0,
       position: { xPt: 250, yPt: 250, widthPt: 24, heightPt: 24 },
       color: { r: 0.8, g: 0.1, b: 0.1 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "rect",
+      page: 0,
+      position: { xPt: 300, yPt: 300, widthPt: 40, heightPt: 30 },
+      stroke: { r: 0, g: 0, b: 0 },
+      fill: { r: 1, g: 0.8, b: 0 },
+      strokeWidthPt: 1,
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ellipse",
+      page: 0,
+      position: { xPt: 360, yPt: 300, widthPt: 40, heightPt: 30 },
+      stroke: { r: 0, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "line",
+      page: 0,
+      position: { xPt: 400, yPt: 400, widthPt: 50, heightPt: 0 },
+      start: { xPt: 400, yPt: 400 },
+      end: { xPt: 450, yPt: 400 },
+      stroke: { r: 0, g: 0, b: 0 },
+      arrowEnd: true,
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "polyline",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 100 },
+      points: [
+        { xPt: 0, yPt: 0 },
+        { xPt: 50, yPt: 50 },
+        { xPt: 100, yPt: 0 },
+      ],
+      stroke: { r: 0, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "polygon",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 100 },
+      points: [
+        { xPt: 0, yPt: 0 },
+        { xPt: 100, yPt: 0 },
+        { xPt: 50, yPt: 100 },
+      ],
+      stroke: { r: 0, g: 0, b: 0 },
+      fill: { r: 1, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ink",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 },
+      strokes: [
+        [
+          { xPt: 0, yPt: 0 },
+          { xPt: 50, yPt: 25 },
+          { xPt: 100, yPt: 50 },
+        ],
+      ],
+      stroke: { r: 0, g: 0, b: 0 },
+      strokeWidthPt: 1,
     });
 
     const original = sdk.toTemplate();
@@ -449,6 +515,149 @@ describe("templateToJSON / templateFromJSON: overlay variant preservation", () =
     expect(a.color).toBeUndefined();
     expect("color" in a).toBe(false);
     expect(b.color).toEqual({ r: 0.5, g: 0.5, b: 0.5 });
+  });
+
+  it("rect overlay preserves stroke, fill, width, opacity", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "rect",
+      page: 0,
+      position: { xPt: 10, yPt: 10, widthPt: 50, heightPt: 30 },
+      stroke: { r: 0.1, g: 0.2, b: 0.3 },
+      strokeWidthPt: 1.5,
+      fill: { r: 0.9, g: 0.9, b: 0.5 },
+      opacity: 0.8,
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "rect" }>;
+    expect(o.stroke).toEqual({ r: 0.1, g: 0.2, b: 0.3 });
+    expect(o.fill).toEqual({ r: 0.9, g: 0.9, b: 0.5 });
+    expect(o.strokeWidthPt).toBe(1.5);
+    expect(o.opacity).toBe(0.8);
+  });
+
+  it("ellipse overlay with only a stroke omits fill on round-trip", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ellipse",
+      page: 0,
+      position: { xPt: 10, yPt: 10, widthPt: 50, heightPt: 30 },
+      stroke: { r: 0.1, g: 0.1, b: 0.1 },
+      strokeWidthPt: 1,
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "ellipse" }>;
+    expect(o.fill).toBeUndefined();
+    expect("fill" in o).toBe(false);
+    expect(o.strokeWidthPt).toBe(1);
+  });
+
+  it("line overlay preserves endpoints + arrow flag", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "line",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 40 },
+      start: { xPt: 10, yPt: 10 },
+      end: { xPt: 110, yPt: 50 },
+      stroke: { r: 0, g: 0, b: 0 },
+      strokeWidthPt: 1,
+      arrowEnd: true,
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "line" }>;
+    expect(o.start).toEqual({ xPt: 10, yPt: 10 });
+    expect(o.end).toEqual({ xPt: 110, yPt: 50 });
+    expect(o.arrowEnd).toBe(true);
+  });
+
+  it("polyline + polygon overlays preserve their vertex arrays in order", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "polyline",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 100 },
+      points: [
+        { xPt: 0, yPt: 0 },
+        { xPt: 50, yPt: 50 },
+        { xPt: 100, yPt: 0 },
+      ],
+      stroke: { r: 0, g: 0, b: 0 },
+    });
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "polygon",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 100 },
+      points: [
+        { xPt: 0, yPt: 0 },
+        { xPt: 100, yPt: 0 },
+        { xPt: 50, yPt: 100 },
+      ],
+      stroke: { r: 0, g: 0, b: 0 },
+      fill: { r: 1, g: 1, b: 0 },
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const pl = restored.fields[0] as Extract<
+      OverlayField,
+      { kind: "polyline" }
+    >;
+    const pg = restored.fields[1] as Extract<OverlayField, { kind: "polygon" }>;
+    expect(pl.points).toEqual([
+      { xPt: 0, yPt: 0 },
+      { xPt: 50, yPt: 50 },
+      { xPt: 100, yPt: 0 },
+    ]);
+    expect(pg.points).toEqual([
+      { xPt: 0, yPt: 0 },
+      { xPt: 100, yPt: 0 },
+      { xPt: 50, yPt: 100 },
+    ]);
+    expect(pg.fill).toEqual({ r: 1, g: 1, b: 0 });
+  });
+
+  it("ink overlay preserves strokes and highlighter intent", async () => {
+    const sdk = await loadFlat();
+    sdk.addOverlay({
+      source: "overlay",
+      kind: "ink",
+      page: 0,
+      position: { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 },
+      strokes: [
+        [
+          { xPt: 0, yPt: 0 },
+          { xPt: 50, yPt: 25 },
+          { xPt: 100, yPt: 50 },
+        ],
+        [
+          { xPt: 10, yPt: 10 },
+          { xPt: 20, yPt: 20 },
+        ],
+      ],
+      stroke: { r: 1, g: 1, b: 0 },
+      strokeWidthPt: 6,
+      opacity: 0.4,
+      intent: "highlight",
+    });
+    const t = sdk.toTemplate();
+    const restored = roundTrip(t);
+    const o = restored.fields[0] as Extract<OverlayField, { kind: "ink" }>;
+    expect(o.strokes.length).toBe(2);
+    expect(o.strokes[0].length).toBe(3);
+    expect(o.strokes[1]).toEqual([
+      { xPt: 10, yPt: 10 },
+      { xPt: 20, yPt: 20 },
+    ]);
+    expect(o.intent).toBe("highlight");
+    expect(o.opacity).toBe(0.4);
   });
 
   it("cross overlay survives with and without `color`", async () => {

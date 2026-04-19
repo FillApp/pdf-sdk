@@ -5,8 +5,12 @@ import {
   type AcroFormField,
   type Template,
 } from "../src/index.js";
-import { PDFDocument } from "@cantoo/pdf-lib";
-import { FIXTURES, loadFixture } from "./helpers/fixtures.js";
+import {
+  FIXTURES,
+  getTestEngine,
+  loadFixture,
+  loadSdk,
+} from "./helpers/fixtures.js";
 
 describe("parse: f1040 (primary legal-form fixture)", () => {
   let sdk: PdfSdk;
@@ -14,7 +18,7 @@ describe("parse: f1040 (primary legal-form fixture)", () => {
   let fields: AcroFormField[];
 
   beforeAll(async () => {
-    sdk = await PdfSdk.load(loadFixture(FIXTURES.f1040));
+    sdk = await loadSdk(FIXTURES.f1040);
     template = sdk.toTemplate();
     fields = template.fields.filter(
       (f): f is AcroFormField => f.source === "acroform",
@@ -84,7 +88,7 @@ describe("parse: choices (supplementary fixture for radio/dropdown/listbox)", ()
   let sdk: PdfSdk;
 
   beforeAll(async () => {
-    sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    sdk = await loadSdk(FIXTURES.choices);
     fields = sdk
       .toTemplate()
       .fields.filter((f): f is AcroFormField => f.source === "acroform");
@@ -143,7 +147,7 @@ describe("parse: choices (supplementary fixture for radio/dropdown/listbox)", ()
 
 describe("parse: flat PDF with no AcroForm", () => {
   it("reports hasAcroForm: false and empty fields", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.flat));
+    const sdk = await loadSdk(FIXTURES.flat);
     const t = sdk.toTemplate();
     expect(t.metadata.hasAcroForm).toBe(false);
     expect(t.fields).toEqual([]);
@@ -152,77 +156,71 @@ describe("parse: flat PDF with no AcroForm", () => {
 
 describe("parse: encrypted PDF", () => {
   it("refuses encrypted input by default", async () => {
-    await expect(
-      PdfSdk.load(loadFixture(FIXTURES.encrypted)),
-    ).rejects.toThrow();
-  });
-
-  it("opens encrypted input when allowEncrypted is true", async () => {
-    // pdf-lib's ignoreEncryption mode parses the container but cannot decrypt
-    // object streams — fields read back empty. The test's job is to pin that
-    // the load path succeeds rather than throw, not to claim decryption.
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.encrypted), {
-      allowEncrypted: true,
-    });
-    expect(sdk.toTemplate().metadata.pageCount).toBeGreaterThan(0);
+    // PDFium rejects password-protected documents outright. The SDK
+    // surfaces the engine error via the load task's rejection.
+    await expect(loadSdk(FIXTURES.encrypted)).rejects.toThrow();
   });
 });
 
 describe("load input types", () => {
   it("accepts Uint8Array", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    const sdk = await loadSdk(FIXTURES.choices);
     expect(sdk.getFields().length).toBeGreaterThan(0);
   });
 
   it("accepts ArrayBuffer", async () => {
+    const engine = await getTestEngine();
     const bytes = loadFixture(FIXTURES.choices);
     const ab = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(ab).set(bytes);
-    const sdk = await PdfSdk.load(ab);
+    const sdk = await PdfSdk.load(ab, { engine });
     expect(sdk.getFields().length).toBeGreaterThan(0);
   });
 
   it("accepts base64 string", async () => {
+    const engine = await getTestEngine();
     const bytes = loadFixture(FIXTURES.choices);
     const bin = String.fromCharCode(...bytes);
     const b64 = btoa(bin);
-    const sdk = await PdfSdk.load(b64);
+    const sdk = await PdfSdk.load(b64, { engine });
     expect(sdk.getFields().length).toBeGreaterThan(0);
   });
 
   it("accepts Blob", async () => {
+    const engine = await getTestEngine();
     const bytes = loadFixture(FIXTURES.choices);
     const ab = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(ab).set(bytes);
     const blob = new Blob([ab]);
-    const sdk = await PdfSdk.load(blob);
+    const sdk = await PdfSdk.load(blob, { engine });
     expect(sdk.getFields().length).toBeGreaterThan(0);
   });
 });
 
 describe("malformed input", () => {
   it("throws on bytes that aren't a PDF", async () => {
+    const engine = await getTestEngine();
     await expect(
-      PdfSdk.load(new Uint8Array([1, 2, 3, 4, 5])),
+      PdfSdk.load(new Uint8Array([1, 2, 3, 4, 5]), { engine }),
     ).rejects.toThrow();
   });
 });
 
 describe("getField / getFields / toTemplate return copies", () => {
   it("getFields returns a fresh array per call", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    const sdk = await loadSdk(FIXTURES.choices);
     expect(sdk.getFields()).not.toBe(sdk.getFields());
   });
 
   it("mutating getFields() does not mutate SDK state", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    const sdk = await loadSdk(FIXTURES.choices);
     const before = sdk.getFields().length;
     sdk.getFields().pop();
     expect(sdk.getFields().length).toBe(before);
   });
 
   it("toTemplate() returns an independent copy of fields and pages", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    const sdk = await loadSdk(FIXTURES.choices);
     const t1 = sdk.toTemplate();
     const t2 = sdk.toTemplate();
     expect(t1).not.toBe(t2);
@@ -231,16 +229,23 @@ describe("getField / getFields / toTemplate return copies", () => {
   });
 
   it("getField returns null for unknown id", async () => {
-    const sdk = await PdfSdk.load(loadFixture(FIXTURES.choices));
+    const sdk = await loadSdk(FIXTURES.choices);
     expect(sdk.getField("does-not-exist")).toBeNull();
   });
 });
 
 describe("parseToTemplate standalone", () => {
-  it("is exported and operates on a pdf-lib PDFDocument", async () => {
+  it("is exported and operates on an engine-opened PDFium document", async () => {
+    const engine = await getTestEngine();
     const bytes = loadFixture(FIXTURES.choices);
-    const doc = await PDFDocument.load(bytes);
-    const { template, diagnostics } = parseToTemplate(doc, bytes);
+    const content = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    const doc = await engine
+      .openDocumentBuffer({ id: "parseToTemplate-standalone", content })
+      .toPromise();
+    const { template, diagnostics } = await parseToTemplate(engine, doc, bytes);
     expect(template.fields.length).toBe(3);
     expect(diagnostics).toEqual([]);
   });

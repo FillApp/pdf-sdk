@@ -2,7 +2,9 @@ import type { Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PdfEngine } from "@embedpdf/models";
 import { PdfSdk } from "../../src/index.js";
+import { createNodeEngine } from "../../src/engine-node.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, "..", "fixtures");
@@ -11,8 +13,15 @@ export function loadFixtureBytes(name: string): Uint8Array {
   return new Uint8Array(readFileSync(join(fixturesDir, name)));
 }
 
+let enginePromise: Promise<PdfEngine<Blob>> | null = null;
+function getEngine(): Promise<PdfEngine<Blob>> {
+  if (!enginePromise) enginePromise = createNodeEngine();
+  return enginePromise;
+}
+
 export async function freshSdk(fixture: string): Promise<PdfSdk> {
-  return PdfSdk.load(loadFixtureBytes(fixture));
+  const engine = await getEngine();
+  return PdfSdk.load(loadFixtureBytes(fixture), { engine });
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {

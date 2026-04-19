@@ -7,14 +7,21 @@
   <body>
     <div id="status">loading</div>
     <script type="module">
-      import { PdfSdk, base64ToBytes } from "/sdk-bundle.mjs";
+      import {
+        PdfSdk,
+        base64ToBytes,
+        createBrowserEngine,
+      } from "/sdk-bundle.mjs";
+
+      const enginePromise = createBrowserEngine();
 
       window.runBrowserGenerate = async function runBrowserGenerate({
         pdfBase64,
         textFillsByAcroName,
       }) {
+        const engine = await enginePromise;
         const bytes = base64ToBytes(pdfBase64);
-        const sdk = await PdfSdk.load(bytes);
+        const sdk = await PdfSdk.load(bytes, { engine });
         for (const [acroName, value] of textFillsByAcroName) {
           const field = sdk
             .getFields()

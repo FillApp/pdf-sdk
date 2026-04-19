@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@fillapp/pdf-sdk.svg)](https://www.npmjs.com/package/@fillapp/pdf-sdk)
 [![license](https://img.shields.io/npm/l/@fillapp/pdf-sdk.svg)](LICENSE)
 
-Isomorphic PDF form-filling SDK. One package, one API, runs in Node and modern browsers. Pure JavaScript, no native bindings.
+Isomorphic PDF form-filling SDK. One package, one API, runs in Node and modern browsers. Uses PDFium (via EmbedPDF's WASM engine) for every file read and every byte written, so the AcroForm rendering done in a viewer and the PDF produced by `generate()` come from the same code path — pixel-identical fills by construction.
 
 ## Status
 
@@ -16,28 +16,31 @@ Feedback, bug reports, and PRs are welcome.
 - Load a PDF from `Uint8Array`, `ArrayBuffer`, `Blob`, or base64 string.
 - Parse every native AcroForm field (text, checkbox, radio, dropdown, listbox), including radio groups with per-widget positions and hierarchical field names.
 - Fill values via `setFieldValue(id, value)` with variant-correct validation, `maxLength` truncation, and rejection of unknown options.
-- Draw overlay content: text with size and RGB color, PNG or JPEG images, vector checkmark and cross glyphs at arbitrary PDF coordinates. Works on flat PDFs or on top of AcroForm output.
-- `generate()` preserves the AcroForm so Acrobat, Chrome, and Firefox continue to render and edit the form.
-- Bundled Noto Sans subset (Latin, Latin Extended, Cyrillic). Pass `{ font }` to ship your own for other scripts.
+- Draw overlay content: text with size and RGB color, PNG or JPEG images, check and cross glyphs at arbitrary PDF coordinates. Works on flat PDFs or on top of AcroForm output. All overlays are flattened into the page content stream on generate, so every viewer shows them.
+- `generate()` regenerates widget appearance streams for filled fields, so iOS Preview, print pipelines, and rasterizers that ignore `/NeedAppearances` still render correctly.
+- Overlay text uses the 14 standard PDF fonts baked into PDFium (Helvetica, ZapfDingbats, etc.) — no font embedding, no bundle weight, no subset handling.
 - Byte-for-byte deterministic output across Node and browser for the same `Template`.
-- Encrypted documents are refused by default (`{ allowEncrypted: true }` to opt in).
 - Structured diagnostics channel for non-fatal parse, fill, and generate issues.
 - Visual regression suite renders every generate path through `pdfjs-dist` and diffs committed PNG baselines.
 
 ## Install
 
 ```bash
-npm install @fillapp/pdf-sdk
+npm install @fillapp/pdf-sdk @embedpdf/engines @embedpdf/models @embedpdf/pdfium
 ```
+
+The SDK declares the three `@embedpdf/*` packages as peer dependencies so consumers who already use EmbedPDF (for the viewer) don't end up with duplicate copies.
 
 ## Usage
 
-### Fill and generate
+### Create an engine and fill a form
 
 ```ts
 import { PdfSdk } from "@fillapp/pdf-sdk";
+import { createNodeEngine } from "@fillapp/pdf-sdk/engine/node";
 
-const sdk = await PdfSdk.load(pdfBytes); // Uint8Array | ArrayBuffer | Blob | base64 string
+const engine = await createNodeEngine();
+const sdk = await PdfSdk.load(pdfBytes, { engine });
 
 for (const field of sdk.getFields()) {
   console.log(
@@ -98,7 +101,7 @@ for (const diag of sdk.diagnostics) {
 }
 ```
 
-Kinds surfaced today: `no-widgets`, `orphan-widget`, `value-extraction-failed`, `options-extraction-failed`, `value-truncated`.
+Kinds surfaced today: `orphan-widget`, `value-truncated`.
 
 ## The `Template` shape
 
@@ -116,7 +119,7 @@ type Template = {
 };
 ```
 
-Coordinates are PDF points, bottom-left origin. Conversion helpers (`ptToMm`, `mmToPt`, `pxToPt`, `ptToPx`, `flipY`) are available from the main entry or from `@fillapp/pdf-sdk/utils` for a smaller import that does not pull in pdf-lib.
+Coordinates are PDF points, bottom-left origin. Conversion helpers (`ptToMm`, `mmToPt`, `pxToPt`, `ptToPx`, `flipY`) are available from the main entry or from `@fillapp/pdf-sdk/utils` for a smaller import.
 
 ## API
 
@@ -124,7 +127,10 @@ Coordinates are PDF points, bottom-left origin. Conversion helpers (`ptToMm`, `m
 class PdfSdk {
   static load(
     input: Uint8Array | ArrayBuffer | Blob | string,
-    opts?: { allowEncrypted?: boolean },
+    opts: {
+      engine: PdfEngine<Blob>; // required; from @embedpdf/engines
+      doc?: PdfDocumentObject; // optional: reuse an already-open PDFium doc
+    },
   ): Promise<PdfSdk>;
 
   toTemplate(): Template;
@@ -140,15 +146,20 @@ class PdfSdk {
   ): void;
   removeOverlay(id: string): void;
 
-  generate(opts?: {
-    font?: Uint8Array | ArrayBuffer; // override the bundled Noto Sans subset
-  }): Promise<Uint8Array>;
+  generate(): Promise<Uint8Array>;
 
   readonly diagnostics: readonly ParseDiagnostic[];
 }
 ```
 
-All getters return independent copies. Mutating them does not affect the SDK instance.
+The engine is injected so the SDK is free of any environment-specific bootstrapping. Two helpers wrap the official EmbedPDF setup if you aren't already running one:
+
+- **Node:** `import { createNodeEngine } from "@fillapp/pdf-sdk/engine/node"` — loads the PDFium WASM bundled with `@embedpdf/pdfium` from disk.
+- **Browser:** `import { createBrowserEngine } from "@fillapp/pdf-sdk/engine/browser"` — boots PDFium in a Web Worker, fetching the WASM from jsDelivr by default. Pass `{ wasmUrl }` to self-host.
+
+When the app already owns an engine (e.g. React + EmbedPDF's `usePdfiumEngine()`), pass that one in instead of creating a second — it halves the PDFium memory footprint.
+
+All getters return independent copies. Mutating them does not affect the SDK instance. Mutation methods are synchronous from the caller's perspective: engine work is queued and awaited inside `generate()`.
 
 ## Roadmap
 
@@ -156,15 +167,14 @@ Rough priority order. The 0.x line will keep moving until the must-haves ship.
 
 ### Must-have before 1.0
 
-- **Reliable rendering across all viewers.** Today `generate()` sets `/NeedAppearances true`, which Acrobat, Chrome, Firefox, and pdf.js honor. iOS Preview, some print pipelines, and PDF-to-image rasterizers do not, and will show filled text and checkboxes as blank. Plan: regenerate appearance streams for text and checkbox fields using the bundled font so the output renders everywhere. Radios, dropdowns, and listboxes stay on the flag path.
+- **Custom overlay fonts.** PDFium's FreeText annotation is currently restricted to the 14 standard PDF fonts. For Unicode coverage beyond Latin-1 (CJK, Arabic, non-Latin European scripts) we need a path that embeds a TTF and uses it for overlay text — either upstream in EmbedPDF's annotation model or via a pre-flattened image-stamp fallback.
 - **Batch fill.** `setFieldValues(values)` in a single call, with unknown ids reported as diagnostics instead of throwing so a partial fill is not aborted.
-- **Template serialization.** `templateToJSON(template)` and `templateFromJSON(json)` that base64 the `basePdf` so the whole `Template` survives a JSON round-trip. Needed to persist forms server-side and rehydrate in the browser.
 - **Per-field font-size override** when the template's Default Appearance is too large for the value. Probably `setFieldValue(id, value, { fontSizePt })`.
-- **Real password-protected PDFs.** Today `allowEncrypted: true` opens the file structurally but leaves field streams unreadable. Add a `{ password }` decryption path.
-- **Multi-font fallback chain** for mixed-script documents. Accept `fonts: Uint8Array[]` on `GenerateOptions` and fall back in order per glyph.
-- **Overlay text styling.** Font family, bold, italic, alignment, rotation, multiline wrap. Needed for legal forms that expect centered names or rotated margin notes.
+- **Password-protected PDFs.** Accept `{ password }` in `LoadOptions` and pass it through to PDFium.
+- **Overlay text styling.** Bold, italic, alignment, rotation, multiline wrap. (Font size and color already work — they flow straight to PDFium's FreeText annotation.)
 - **Overlay image extras.** Opacity, aspect-fit, rotation. Signature stamps need aspect-preserve.
 - **`clearFieldValue` and `resetForm`.** Ergonomics.
+- **`sdk.close()`.** Release the PDFium document without tearing down the whole engine. Today callers need to call `engine.closeAllDocuments()` / `engine.destroy()` themselves.
 - **PDF metadata on `generate()`.** Optional title, author, producer, pdfVersion.
 - **CI visual regression job** with committed Linux baselines alongside the current darwin ones.
 - **Cloudflare Workers smoke test in CI** to back the isomorphic claim for Workers.

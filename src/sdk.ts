@@ -1,37 +1,48 @@
 import {
-  PDFBool,
-  PDFCheckBox,
-  PDFDocument,
-  PDFDropdown,
-  PDFName,
-  PDFOptionList,
-  PDFRadioGroup,
-  PDFTextField,
-  rgb,
-  type Color,
-  type PDFField,
-  type PDFFont,
-  type PDFPage,
-} from "@cantoo/pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
+  PdfAnnotationBorderStyle,
+  PdfAnnotationLineEnding,
+  PdfAnnotationSubtype,
+  PdfStandardFont,
+  PdfTextAlignment,
+  PdfVerticalAlignment,
+  type AnnotationCreateContext,
+  type PdfAnnotationObject,
+  type PdfCircleAnnoObject,
+  type PdfDocumentObject,
+  type PdfEngine,
+  type PdfFreeTextAnnoObject,
+  type PdfInkAnnoObject,
+  type PdfLineAnnoObject,
+  type PdfPageObject,
+  type PdfPolygonAnnoObject,
+  type PdfPolylineAnnoObject,
+  type PdfSquareAnnoObject,
+  type PdfStampAnnoObject,
+  type Position,
+} from "@embedpdf/models";
 import type {
   AcroFormField,
   Field,
+  OverlayEllipse,
   OverlayField,
+  OverlayImage,
+  OverlayInk,
+  OverlayLine,
+  OverlayPolygon,
+  OverlayPolyline,
+  OverlayRect,
+  OverlayText,
   ParseDiagnostic,
+  Point,
   RGB,
   Template,
 } from "./types.js";
-import { parseToTemplate } from "./parse.js";
-import { base64ToBytes, normalizeInput } from "./utils.js";
-import { NOTO_SANS_REGULAR_TTF_BASE64 } from "./fonts/noto-sans.js";
+import { parseToTemplate, type WidgetIndex } from "./parse.js";
+import { normalizeInput } from "./utils.js";
 
 /**
  * Distributive Omit — preserves the discriminated union so callers can pass a
- * literal keyed on `kind` and have TS narrow to the matching variant. Plain
- * `Omit<OverlayField, "id">` collapses the union into a single type whose
- * keys are the intersection, which breaks variant-specific fields like
- * `text` and `image`.
+ * literal keyed on `kind` and have TS narrow to the matching variant.
  */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown
   ? Omit<T, K>
@@ -39,68 +50,209 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown
 
 export type OverlayInit = DistributiveOmit<OverlayField, "id">;
 
-export type GenerateOptions = {
-  /**
-   * Override the font used to render overlay text. If omitted, the bundled
-   * Noto Sans subset (Latin + Latin Extended + Cyrillic) is used.
-   *
-   * Pass a TrueType / OpenType font (as raw bytes) to support other scripts —
-   * CJK, Arabic, Devanagari, etc. The font is embedded subsetted.
-   */
-  font?: Uint8Array | ArrayBuffer;
-};
-
 export type LoadOptions = {
-  /** Allow parsing encrypted documents. Default false — refuses and throws. */
-  allowEncrypted?: boolean;
+  /**
+   * The PDFium-backed engine (from `@embedpdf/engines`). In the browser, share
+   * the engine with the viewer (e.g. the one from `usePdfiumEngine()`) to
+   * avoid loading the WASM twice. In Node, create one with `createNodeEngine`
+   * from `@fillapp/pdf-sdk/engine/node`.
+   */
+  engine: PdfEngine<Blob>;
+
+  /**
+   * Reuse an already-opened PDFium document handle instead of having the SDK
+   * open its own. Used when the viewer already has the same document open
+   * and we want to avoid holding two copies in WASM memory.
+   *
+   * When omitted, the SDK opens its own document from `input`.
+   */
+  doc?: PdfDocumentObject;
 };
 
-/** Fixed timestamp used during generate() so repeat runs produce identical bytes. */
+export type GenerateOptions = Record<never, never>;
+
+/** Fixed timestamp used during `generate()` so repeat runs stay byte-identical. */
 const DETERMINISTIC_DATE = new Date("2000-01-01T00:00:00.000Z");
 
+const DEFAULT_TEXT_COLOR = "#000000";
+
 /**
- * Minimal AcroForm filler. Loads a PDF, surfaces every supported field as a
- * discriminated-union entry on `Template.fields`, mutates field values via
- * `setFieldValue`, and emits a PDF whose AcroForm is preserved so downstream
- * viewers (Acrobat, pdf.js, etc.) can continue editing.
+ * Canonical namespace used to derive deterministic annotation UUIDs. Changing
+ * this changes output bytes, so it's pinned.
+ */
+const OVERLAY_NAMESPACE = "fillapp-overlay";
+
+/**
+ * Convert an SDK `{r,g,b}` (0..1) to a web hex color. PDFium's annotation
+ * objects take hex strings, not arrays.
+ */
+function rgbToHex(
+  c: RGB | undefined,
+  fallback: string = DEFAULT_TEXT_COLOR,
+): string {
+  if (!c) return fallback;
+  const toByte = (v: number): string =>
+    Math.max(0, Math.min(255, Math.round(v * 255)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${toByte(c.r)}${toByte(c.g)}${toByte(c.b)}`.toUpperCase();
+}
+
+/**
+ * Deterministic FNV-1a 32-bit hash. Used only to derive stable annotation
+ * UUIDs from overlay ids — not security-sensitive.
+ */
+function fnv1a32(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Derive a stable v4-formatted UUID from an overlay id. EmbedPDF requires
+ * UUID-v4 shape or it substitutes a random one on create, which would break
+ * byte-deterministic output.
+ */
+function overlayIdToAnnotationUuid(overlayId: string): string {
+  const seed = `${OVERLAY_NAMESPACE}:${overlayId}`;
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 4; i++) {
+    const chunk = fnv1a32(`${seed}:${i}`);
+    bytes[i * 4] = (chunk >>> 24) & 0xff;
+    bytes[i * 4 + 1] = (chunk >>> 16) & 0xff;
+    bytes[i * 4 + 2] = (chunk >>> 8) & 0xff;
+    bytes[i * 4 + 3] = chunk & 0xff;
+  }
+  // Force v4 / variant bits.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Convert a bottom-left SDK position to a top-left PDFium annotation rect.
+ */
+function sdkPositionToAnnotationRect(
+  pos: { xPt: number; yPt: number; widthPt: number; heightPt: number },
+  pageHeightPt: number,
+): PdfAnnotationObject["rect"] {
+  return {
+    origin: {
+      x: pos.xPt,
+      y: pageHeightPt - pos.yPt - pos.heightPt,
+    },
+    size: { width: pos.widthPt, height: pos.heightPt },
+  };
+}
+
+/**
+ * Convert a bottom-left SDK point ({xPt, yPt}) to the PDFium-native top-left
+ * screen-space `Position` shape used by line / polyline / polygon / ink
+ * vertices. PDFium's engine expects these in the same frame as annotation
+ * rects (top-left origin in page points), and inverts Y internally when
+ * serialising to the PDF file.
+ */
+function sdkPointToPdfPoint(p: Point, pageHeightPt: number): Position {
+  return { x: p.xPt, y: pageHeightPt - p.yPt };
+}
+
+/**
+ * Shape interior color. Shapes in PDFium distinguish "no fill" from "black
+ * fill"; the engine treats `"transparent"` as a sentinel and explicitly
+ * clears the interior color when it sees it.
+ */
+function rgbToTransparent(c: RGB | undefined): string {
+  if (!c) return "transparent";
+  return rgbToHex(c);
+}
+
+/**
+ * Load a PDF, surface every supported AcroForm field as a discriminated-union
+ * entry on `Template.fields`, mutate values via `setFieldValue`, draw overlays
+ * via `addOverlay`, and bake everything into a new PDF with `generate()`.
  *
- * Deliberately does NOT regenerate appearance streams — the canonical way to
- * tell a PDF viewer "values changed, please re-render the widget chrome" is
- * the `/NeedAppearances true` entry on the AcroForm dict, which we set on
- * save. That keeps the SDK's behavior within the PDF spec and avoids fighting
- * pdf-lib's renderer.
+ * Internals are PDFium-all-the-way-down so the viewer (EmbedPDF) and the
+ * download produced by this SDK render identically.
+ *
+ * Mutation methods (`setFieldValue`, `addOverlay`, `updateOverlay`,
+ * `removeOverlay`) are synchronous from the caller's perspective — they
+ * update the SDK's in-memory snapshot and enqueue the PDFium work on an
+ * internal serial queue. `generate()` awaits every pending operation before
+ * saving, so the output reflects the caller's final state regardless of
+ * ordering between calls.
  */
 export class PdfSdk {
-  /**
-   * Append-only log of non-fatal issues encountered during parse or fill.
-   * Consumers can inspect this to surface warnings to users.
-   */
+  /** Append-only log of non-fatal issues surfaced during parse or fill. */
   readonly diagnostics: readonly ParseDiagnostic[];
-  private readonly doc: PDFDocument;
+
+  private readonly engine: PdfEngine<Blob>;
+  private readonly doc: PdfDocumentObject;
   private readonly template: Template;
+  private readonly widgetIndex: Map<string, WidgetIndex>;
+  /** Overlay id → the PDFium annotation it's backed by. */
+  private readonly overlayAnnotations = new Map<
+    string,
+    { annotation: PdfAnnotationObject; page: PdfPageObject }
+  >();
+
+  /** Serial tail for queued async engine work. See `enqueue`. */
+  private pending: Promise<void> = Promise.resolve();
   private overlayCounter = 0;
 
   private constructor(
-    doc: PDFDocument,
+    engine: PdfEngine<Blob>,
+    doc: PdfDocumentObject,
     template: Template,
     diagnostics: readonly ParseDiagnostic[],
+    widgetIndex: Map<string, WidgetIndex>,
   ) {
+    this.engine = engine;
     this.doc = doc;
     this.template = template;
     this.diagnostics = diagnostics;
+    this.widgetIndex = widgetIndex;
   }
 
+  /**
+   * Open a PDF and return a ready SDK instance. The caller must provide an
+   * engine; see `createBrowserEngine` / `createNodeEngine`.
+   */
   static async load(
     input: Uint8Array | ArrayBuffer | Blob | string,
-    opts: LoadOptions = {},
+    opts: LoadOptions,
   ): Promise<PdfSdk> {
+    if (!opts || !opts.engine) {
+      throw new TypeError(
+        "PdfSdk.load: opts.engine is required. Pass a PdfEngine from @embedpdf/engines (e.g. createNodeEngine() or the engine from usePdfiumEngine()).",
+      );
+    }
     const bytes = await normalizeInput(input);
-    const doc = await PDFDocument.load(bytes, {
-      ignoreEncryption: opts.allowEncrypted === true,
-      throwOnInvalidObject: false,
-    });
-    const { template, diagnostics } = parseToTemplate(doc, bytes);
-    return new PdfSdk(doc, template, diagnostics);
+    const engine = opts.engine;
+
+    let doc: PdfDocumentObject;
+    if (opts.doc) {
+      doc = opts.doc;
+    } else {
+      const content = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+      const docId = `fillapp-sdk-${Math.random().toString(36).slice(2, 10)}`;
+      doc = await engine.openDocumentBuffer({ id: docId, content }).toPromise();
+    }
+
+    const { template, diagnostics, widgetIndex } = await parseToTemplate(
+      engine,
+      doc,
+      bytes,
+    );
+    return new PdfSdk(engine, doc, template, diagnostics, widgetIndex);
   }
 
   /** Snapshot of the Template. Safe to mutate the returned object. */
@@ -125,62 +277,212 @@ export class PdfSdk {
     return found ? { ...found } : null;
   }
 
+  /** The underlying PDFium document handle. Advanced use only. */
+  getPdfiumDocument(): PdfDocumentObject {
+    return this.doc;
+  }
+
   /**
    * Write a value into the named field, validating that the value shape
    * matches the field's type.
    *
-   *   - Text: string; `maxLength` enforced via truncation + diagnostic.
-   *   - Checkbox: boolean.
-   *   - Radio: string that matches one of `options[]`.
-   *   - Dropdown / listbox: string or string[]; single-select listbox
+   *   - Text: `string`; `maxLength` enforced via truncation + diagnostic.
+   *   - Checkbox: `boolean`.
+   *   - Radio: `string` that matches one of `options[]`.
+   *   - Dropdown / listbox: `string` or `string[]`; single-select listbox
    *     rejects arrays longer than one.
    *
-   * Throws TypeError on shape mismatch, Error on unknown id / out-of-options
-   * value. Mutates internal state; subsequent `getField` / `toTemplate` calls
-   * and `generate()` reflect the new value.
+   * Throws `TypeError` on shape mismatch and `Error` on unknown id /
+   * out-of-options value. The engine work is queued and completes before
+   * `generate()` returns.
    */
   setFieldValue(id: string, value: string | string[] | boolean): void {
     const field = this.template.fields.find((f) => f.id === id);
-    if (!field) {
-      throw new Error(`Unknown field id: ${id}`);
-    }
+    if (!field) throw new Error(`Unknown field id: ${id}`);
     if (field.source !== "acroform") {
       throw new Error(
         `Field ${id} is an overlay; use updateOverlay() instead.`,
       );
     }
-    const pdfField = this.doc.getForm().getField(field.acroFieldName);
+    const index = this.widgetIndex.get(id);
+    if (!index) {
+      throw new Error(`Internal: missing widget index for field ${id}`);
+    }
 
     switch (field.type) {
       case "text":
-        this.applyTextValue(field, pdfField, value);
+        this.applyTextValue(field, index, value);
         break;
       case "checkbox":
-        this.applyCheckboxValue(field, pdfField, value);
+        this.applyCheckboxValue(field, index, value);
         break;
       case "radio":
-        this.applyRadioValue(field, pdfField, value);
+        this.applyRadioValue(field, index, value);
         break;
       case "dropdown":
       case "listbox":
-        this.applyChoiceValue(field, pdfField, value);
+        this.applyChoiceValue(field, index, value);
         break;
+    }
+  }
+
+  /**
+   * Add an overlay field to the template. PDFium creates a matching annotation
+   * on the enqueue so downloads reflect it via `flattenAnnotation`.
+   */
+  addOverlay(init: OverlayInit): string {
+    const id = `overlay:${this.overlayCounter++}`;
+    const field = { ...init, id } as OverlayField;
+    this.template.fields.push(field);
+    this.enqueue(() => this.createOverlayAnnotation(field));
+    return id;
+  }
+
+  /**
+   * Merge a partial update into the named overlay. `kind` is immutable — the
+   * underlying PDFium annotation is deleted and re-created with the new
+   * payload, so a single `updateOverlay` call can change text, color, size,
+   * or position in one shot without synchronization work at the caller.
+   */
+  updateOverlay(
+    id: string,
+    partial: Partial<Omit<OverlayField, "id" | "source" | "kind">>,
+  ): void {
+    const i = this.findOverlayIndex(id);
+    const existing = this.template.fields[i] as OverlayField;
+    const merged = {
+      ...existing,
+      ...partial,
+      id: existing.id,
+      source: "overlay",
+      kind: existing.kind,
+    } as OverlayField;
+    this.template.fields[i] = merged;
+
+    this.enqueue(async () => {
+      const prev = this.overlayAnnotations.get(id);
+      if (prev) {
+        await this.engine
+          .removePageAnnotation(this.doc, prev.page, prev.annotation)
+          .toPromise();
+        this.overlayAnnotations.delete(id);
+      }
+      await this.createOverlayAnnotation(merged);
+    });
+  }
+
+  removeOverlay(id: string): void {
+    const i = this.findOverlayIndex(id);
+    this.template.fields.splice(i, 1);
+    this.enqueue(async () => {
+      const prev = this.overlayAnnotations.get(id);
+      if (!prev) return;
+      this.overlayAnnotations.delete(id);
+      await this.engine
+        .removePageAnnotation(this.doc, prev.page, prev.annotation)
+        .toPromise();
+    });
+  }
+
+  /**
+   * Serialize the document to PDF bytes.
+   *
+   *   1. Every pending engine operation (field set, overlay create / update /
+   *      delete) is awaited.
+   *   2. Each overlay annotation is flattened into the page content stream so
+   *      the output renders identically in every PDF viewer.
+   *   3. Metadata dates are pinned to a fixed timestamp for byte-deterministic
+   *      output.
+   */
+  async generate(_opts?: GenerateOptions): Promise<Uint8Array> {
+    void _opts; // reserved for future parity options
+    await this.pending;
+
+    await this.engine
+      .setMetadata(this.doc, {
+        modificationDate: DETERMINISTIC_DATE,
+        creationDate: DETERMINISTIC_DATE,
+      })
+      .toPromise();
+
+    for (const [, { annotation, page }] of this.overlayAnnotations) {
+      await this.engine
+        .flattenAnnotation(this.doc, page, annotation)
+        .toPromise();
+    }
+
+    // Collect every widget NM that PDFium will embed in the output so we can
+    // rewrite them with stable ids after save. PDFium synthesizes a random
+    // v4 UUID for any widget that didn't carry an `/NM` in the source PDF
+    // (see EmbedPDF direct engine: `getPageAnnoWidgets` → setAnnotString NM).
+    // Without this step, fresh processes produce different bytes for the
+    // same template.
+    const widgetNms: string[] = [];
+    for (const page of this.doc.pages) {
+      const widgets = await this.engine
+        .getPageAnnoWidgets(this.doc, page)
+        .toPromise();
+      for (const w of widgets) widgetNms.push(w.id);
+    }
+
+    const ab = await this.engine.saveAsCopy(this.doc).toPromise();
+    return normalizeNMs(new Uint8Array(ab), widgetNms);
+  }
+
+  // ---- private mutation helpers ------------------------------------------
+
+  private findOverlayIndex(id: string): number {
+    const i = this.template.fields.findIndex((f) => f.id === id);
+    if (i < 0) throw new Error(`Unknown overlay id: ${id}`);
+    if (this.template.fields[i].source !== "overlay") {
+      throw new Error(`Field ${id} is not an overlay`);
+    }
+    return i;
+  }
+
+  /**
+   * Chain a task onto the internal pending queue. Swallowing rejection here
+   * keeps one failed op from breaking the chain; the rejection itself is
+   * rethrown when a future `generate()` awaits the tail, via a re-assignment
+   * to `this.pending` that preserves the error.
+   */
+  private enqueue(task: () => Promise<void>): void {
+    this.pending = this.pending.then(task, (prevErr) => {
+      // If a prior task failed, still run this one so generate() has the
+      // latest state — but resurface the earliest error on the tail.
+      return task().finally(() => {
+        throw prevErr;
+      });
+    });
+  }
+
+  private async regenerateFor(index: WidgetIndex): Promise<void> {
+    // Regenerate appearance streams for every widget of this field, grouped
+    // by page so we minimise engine round-trips.
+    const byPage = new Map<PdfPageObject, string[]>();
+    for (const { page, widget } of index.widgets) {
+      let ids = byPage.get(page);
+      if (!ids) {
+        ids = [];
+        byPage.set(page, ids);
+      }
+      ids.push(widget.id);
+    }
+    for (const [page, ids] of byPage) {
+      await this.engine
+        .regenerateWidgetAppearances(this.doc, page, ids)
+        .toPromise();
     }
   }
 
   private applyTextValue(
     field: Extract<AcroFormField, { type: "text" }>,
-    pdfField: PDFField,
+    index: WidgetIndex,
     value: string | string[] | boolean,
   ): void {
     if (typeof value !== "string") {
       throw new TypeError(
         `Text field "${field.acroFieldName}" requires a string; got ${describe(value)}.`,
-      );
-    }
-    if (!(pdfField instanceof PDFTextField)) {
-      throw new Error(
-        `Field "${field.acroFieldName}" is not a text field in the PDF.`,
       );
     }
     let final = value;
@@ -193,13 +495,23 @@ export class PdfSdk {
         message: `Truncated value from ${before} to ${field.maxLength} characters (maxLength).`,
       });
     }
-    pdfField.setText(final);
     this.replaceField({ ...field, value: final });
+    this.enqueue(async () => {
+      for (const { page, widget } of index.widgets) {
+        await this.engine
+          .setFormFieldValue(this.doc, page, widget, {
+            kind: "text",
+            text: final,
+          })
+          .toPromise();
+      }
+      await this.regenerateFor(index);
+    });
   }
 
   private applyCheckboxValue(
     field: Extract<AcroFormField, { type: "checkbox" }>,
-    pdfField: PDFField,
+    index: WidgetIndex,
     value: string | string[] | boolean,
   ): void {
     if (typeof value !== "boolean") {
@@ -207,19 +519,23 @@ export class PdfSdk {
         `Checkbox "${field.acroFieldName}" requires a boolean; got ${describe(value)}.`,
       );
     }
-    if (!(pdfField instanceof PDFCheckBox)) {
-      throw new Error(
-        `Field "${field.acroFieldName}" is not a checkbox in the PDF.`,
-      );
-    }
-    if (value) pdfField.check();
-    else pdfField.uncheck();
     this.replaceField({ ...field, value });
+    this.enqueue(async () => {
+      for (const { page, widget } of index.widgets) {
+        await this.engine
+          .setFormFieldValue(this.doc, page, widget, {
+            kind: "checked",
+            checked: value,
+          })
+          .toPromise();
+      }
+      await this.regenerateFor(index);
+    });
   }
 
   private applyRadioValue(
     field: Extract<AcroFormField, { type: "radio" }>,
-    pdfField: PDFField,
+    index: WidgetIndex,
     value: string | string[] | boolean,
   ): void {
     if (typeof value !== "string") {
@@ -227,23 +543,38 @@ export class PdfSdk {
         `Radio "${field.acroFieldName}" requires a string; got ${describe(value)}.`,
       );
     }
-    if (!(pdfField instanceof PDFRadioGroup)) {
-      throw new Error(
-        `Field "${field.acroFieldName}" is not a radio group in the PDF.`,
-      );
-    }
     if (field.options && !field.options.includes(value)) {
       throw new Error(
         `Radio "${field.acroFieldName}" has no option "${value}". Valid: ${field.options.join(", ")}.`,
       );
     }
-    pdfField.select(value);
+    const widgetIdx = field.widgets.findIndex((w) => w.value === value);
+    if (widgetIdx < 0) {
+      throw new Error(
+        `Radio "${field.acroFieldName}" has no widget for option "${value}".`,
+      );
+    }
+    const target = index.widgets[widgetIdx];
+    if (!target) {
+      throw new Error(
+        `Internal: widget index ${widgetIdx} out of range for field ${field.id}.`,
+      );
+    }
     this.replaceField({ ...field, value });
+    this.enqueue(async () => {
+      await this.engine
+        .setFormFieldValue(this.doc, target.page, target.widget, {
+          kind: "checked",
+          checked: true,
+        })
+        .toPromise();
+      await this.regenerateFor(index);
+    });
   }
 
   private applyChoiceValue(
     field: Extract<AcroFormField, { type: "dropdown" | "listbox" }>,
-    pdfField: PDFField,
+    index: WidgetIndex,
     value: string | string[] | boolean,
   ): void {
     const label = field.type === "dropdown" ? "Dropdown" : "Listbox";
@@ -274,223 +605,379 @@ export class PdfSdk {
         }
       }
     }
-    const isDropdown = pdfField instanceof PDFDropdown;
-    const isListbox = pdfField instanceof PDFOptionList;
-    if (!isDropdown && !isListbox) {
-      throw new Error(
-        `Field "${field.acroFieldName}" is not a dropdown or listbox in the PDF.`,
-      );
+
+    const options = field.options ?? [];
+    const selectedIdx = new Set<number>();
+    for (const v of values) {
+      const i = options.indexOf(v);
+      if (i >= 0) selectedIdx.add(i);
     }
-    (pdfField as PDFDropdown | PDFOptionList).select(values);
+
+    // Snapshot previously-selected indexes so we can compute deselects.
+    const previouslySelected = new Set<number>();
+    for (let i = 0; i < options.length; i++) {
+      if (field.value.includes(options[i])) previouslySelected.add(i);
+    }
+
     this.replaceField({ ...field, value: values });
-  }
-
-  /**
-   * Add an overlay field to the template. Overlays are drawn directly onto
-   * page content by `generate()` — use them for flat / scanned PDFs where
-   * no AcroForm widget exists. Returns the generated id.
-   */
-  addOverlay(field: OverlayInit): string {
-    const id = `overlay:${this.overlayCounter++}`;
-    this.template.fields.push({ ...field, id } as OverlayField);
-    return id;
-  }
-
-  /**
-   * Merge a partial update into the named overlay. The `kind` of an overlay
-   * is immutable after creation — remove and re-add if you need to change it.
-   */
-  updateOverlay(
-    id: string,
-    partial: Partial<Omit<OverlayField, "id" | "source" | "kind">>,
-  ): void {
-    const i = this.findOverlayIndex(id);
-    const existing = this.template.fields[i] as OverlayField;
-    this.template.fields[i] = {
-      ...existing,
-      ...partial,
-      id: existing.id,
-      source: "overlay",
-      kind: existing.kind,
-    } as OverlayField;
-  }
-
-  removeOverlay(id: string): void {
-    const i = this.findOverlayIndex(id);
-    this.template.fields.splice(i, 1);
-  }
-
-  private findOverlayIndex(id: string): number {
-    const i = this.template.fields.findIndex((f) => f.id === id);
-    if (i < 0) throw new Error(`Unknown overlay id: ${id}`);
-    if (this.template.fields[i].source !== "overlay") {
-      throw new Error(`Field ${id} is not an overlay`);
-    }
-    return i;
-  }
-
-  /**
-   * Serialize the (possibly modified) document to PDF bytes.
-   *
-   *   1. AcroForm values set via `setFieldValue` already live on the pdf-lib
-   *      form; we set `/NeedAppearances true` so compliant viewers re-render
-   *      each widget with its new value. The SDK does not pre-bake
-   *      appearance streams itself — that path competes with pdf-lib's
-   *      renderer and produces visible artifacts.
-   *   2. Overlay fields are drawn onto page content streams of a scratch
-   *      copy — never onto `this.doc` — so repeated `generate()` calls are
-   *      idempotent and don't accumulate drawings.
-   */
-  async generate(opts: GenerateOptions = {}): Promise<Uint8Array> {
-    const form = this.doc.getForm();
-    form.acroForm.dict.set(PDFName.of("NeedAppearances"), PDFBool.True);
-    this.doc.setModificationDate(DETERMINISTIC_DATE);
-
-    if (!this.hasOverlays()) {
-      return await this.doc.save();
-    }
-
-    // Serialize AcroForm state, reload as a fresh scratch doc, and draw
-    // overlays onto that. `this.doc` stays unmodified so the next call
-    // starts from the same clean baseline.
-    const intermediate = await this.doc.save();
-    const scratch = await PDFDocument.load(intermediate);
-    scratch.registerFontkit(fontkit);
-    const overlayFont = await this.embedOverlayFontInto(scratch, opts.font);
-    await this.drawOverlaysOnto(scratch, overlayFont);
-    scratch.setModificationDate(DETERMINISTIC_DATE);
-    return await scratch.save();
-  }
-
-  /** Access the underlying pdf-lib document. Advanced use only. */
-  getPdfDocument(): PDFDocument {
-    return this.doc;
-  }
-
-  private hasOverlays(): boolean {
-    return this.template.fields.some((f) => f.source === "overlay");
-  }
-
-  private async embedOverlayFontInto(
-    doc: PDFDocument,
-    override?: Uint8Array | ArrayBuffer,
-  ): Promise<PDFFont> {
-    const bytes = override ?? base64ToBytes(NOTO_SANS_REGULAR_TTF_BASE64);
-    return await doc.embedFont(bytes, { subset: true });
-  }
-
-  /**
-   * Paint overlay fields onto the given document's pages. Writes to
-   * `doc.getPages()` — pass a scratch copy, never `this.doc`.
-   */
-  private async drawOverlaysOnto(
-    doc: PDFDocument,
-    font: PDFFont,
-  ): Promise<void> {
-    const pages = doc.getPages();
-    for (const field of this.template.fields) {
-      if (field.source !== "overlay") continue;
-      const page = pages[field.page];
-      if (!page) {
-        this.pushDiagnostic({
-          kind: "orphan-widget",
-          message: `Overlay ${field.id} targets page ${field.page} but the document has only ${pages.length} pages; skipped.`,
-        });
-        continue;
+    this.enqueue(async () => {
+      for (const { page, widget } of index.widgets) {
+        if (field.isMultiSelect) {
+          // Deselect indexes that were selected but aren't any more.
+          for (const i of previouslySelected) {
+            if (selectedIdx.has(i)) continue;
+            await this.engine
+              .setFormFieldValue(this.doc, page, widget, {
+                kind: "selection",
+                index: i,
+                isSelected: false,
+              })
+              .toPromise();
+          }
+        }
+        // Select target indexes. PDFium auto-clears the rest for
+        // single-select; for multi-select our explicit deselect above
+        // already cleared the ones we no longer want.
+        for (const i of selectedIdx) {
+          await this.engine
+            .setFormFieldValue(this.doc, page, widget, {
+              kind: "selection",
+              index: i,
+              isSelected: true,
+            })
+            .toPromise();
+        }
       }
-      switch (field.kind) {
-        case "text":
-          this.drawOverlayText(page, font, field);
-          break;
-        case "image":
-          await this.drawOverlayImage(doc, page, field);
-          break;
-        case "checkmark":
-          this.drawOverlayCheckmark(page, field);
-          break;
-        case "cross":
-          this.drawOverlayCross(page, field);
-          break;
+      await this.regenerateFor(index);
+    });
+  }
+
+  private async createOverlayAnnotation(field: OverlayField): Promise<void> {
+    const page = this.doc.pages[field.page];
+    if (!page) {
+      this.pushDiagnostic({
+        kind: "orphan-widget",
+        message: `Overlay ${field.id} targets page ${field.page} but the document has only ${this.doc.pageCount} pages; skipped.`,
+      });
+      return;
+    }
+    const annotationId = overlayIdToAnnotationUuid(field.id);
+    const rect = sdkPositionToAnnotationRect(field.position, page.size.height);
+
+    switch (field.kind) {
+      case "text": {
+        const annotation: PdfFreeTextAnnoObject = {
+          type: PdfAnnotationSubtype.FREETEXT,
+          id: annotationId,
+          pageIndex: field.page,
+          rect,
+          contents: field.text.value,
+          fontFamily: PdfStandardFont.Helvetica,
+          fontSize: field.text.fontSizePt,
+          fontColor: rgbToHex(field.text.color),
+          textAlign: PdfTextAlignment.Left,
+          verticalAlign: PdfVerticalAlignment.Top,
+          opacity: 1,
+        };
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "image": {
+        await this.createImageOverlay(field, page, rect, annotationId);
+        return;
+      }
+      case "checkmark": {
+        const annotation = this.buildGlyphAnnotation(
+          annotationId,
+          field.page,
+          rect,
+          "\u2714", // HEAVY CHECK MARK
+          field.color,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "cross": {
+        const annotation = this.buildGlyphAnnotation(
+          annotationId,
+          field.page,
+          rect,
+          "\u2718", // HEAVY BALLOT X
+          field.color,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "rect": {
+        const annotation = this.buildRectAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "ellipse": {
+        const annotation = this.buildEllipseAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "line": {
+        const annotation = this.buildLineAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "polyline": {
+        const annotation = this.buildPolylineAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "polygon": {
+        const annotation = this.buildPolygonAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
+      }
+      case "ink": {
+        const annotation = this.buildInkAnnotation(
+          annotationId,
+          field,
+          page.size.height,
+        );
+        await this.engine
+          .createPageAnnotation(this.doc, page, annotation)
+          .toPromise();
+        this.overlayAnnotations.set(field.id, { annotation, page });
+        return;
       }
     }
   }
 
-  private drawOverlayText(
-    page: PDFPage,
-    font: PDFFont,
-    field: Extract<OverlayField, { kind: "text" }>,
-  ): void {
-    const { position, text } = field;
-    const baselineY = position.yPt + position.heightPt * 0.2;
-    page.drawText(text.value, {
-      x: position.xPt,
-      y: baselineY,
-      size: text.fontSizePt,
-      font,
-      color: rgbOrBlack(text.color),
-    });
+  private buildRectAnnotation(
+    annotationId: string,
+    field: OverlayRect,
+    pageHeightPt: number,
+  ): PdfSquareAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.SQUARE,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      flags: [],
+      color: rgbToTransparent(field.fill),
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      strokeStyle: PdfAnnotationBorderStyle.SOLID,
+      opacity: field.opacity ?? 1,
+    };
   }
 
-  private async drawOverlayImage(
-    doc: PDFDocument,
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "image" }>,
+  private buildEllipseAnnotation(
+    annotationId: string,
+    field: OverlayEllipse,
+    pageHeightPt: number,
+  ): PdfCircleAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.CIRCLE,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      flags: [],
+      color: rgbToTransparent(field.fill),
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      strokeStyle: PdfAnnotationBorderStyle.SOLID,
+      opacity: field.opacity ?? 1,
+    };
+  }
+
+  private buildLineAnnotation(
+    annotationId: string,
+    field: OverlayLine,
+    pageHeightPt: number,
+  ): PdfLineAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.LINE,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      linePoints: {
+        start: sdkPointToPdfPoint(field.start, pageHeightPt),
+        end: sdkPointToPdfPoint(field.end, pageHeightPt),
+      },
+      lineEndings: field.arrowEnd
+        ? {
+            start: PdfAnnotationLineEnding.None,
+            end: PdfAnnotationLineEnding.OpenArrow,
+          }
+        : undefined,
+      intent: field.arrowEnd ? "LineArrow" : undefined,
+      color: "transparent",
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      strokeStyle: PdfAnnotationBorderStyle.SOLID,
+      opacity: field.opacity ?? 1,
+    };
+  }
+
+  private buildPolylineAnnotation(
+    annotationId: string,
+    field: OverlayPolyline,
+    pageHeightPt: number,
+  ): PdfPolylineAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.POLYLINE,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      vertices: field.points.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
+      color: "transparent",
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      strokeStyle: PdfAnnotationBorderStyle.SOLID,
+      opacity: field.opacity ?? 1,
+    };
+  }
+
+  private buildPolygonAnnotation(
+    annotationId: string,
+    field: OverlayPolygon,
+    pageHeightPt: number,
+  ): PdfPolygonAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.POLYGON,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      vertices: field.points.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
+      color: rgbToTransparent(field.fill),
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      strokeStyle: PdfAnnotationBorderStyle.SOLID,
+      opacity: field.opacity ?? 1,
+    };
+  }
+
+  private buildInkAnnotation(
+    annotationId: string,
+    field: OverlayInk,
+    pageHeightPt: number,
+  ): PdfInkAnnoObject {
+    const rect = sdkPositionToAnnotationRect(field.position, pageHeightPt);
+    return {
+      type: PdfAnnotationSubtype.INK,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      intent: field.intent === "highlight" ? "InkHighlight" : undefined,
+      inkList: field.strokes.map((stroke) => ({
+        points: stroke.map((p) => sdkPointToPdfPoint(p, pageHeightPt)),
+      })),
+      strokeColor: rgbToHex(field.stroke),
+      strokeWidth: field.strokeWidthPt ?? 1,
+      opacity: field.opacity ?? 1,
+    };
+  }
+
+  private buildGlyphAnnotation(
+    annotationId: string,
+    pageIndex: number,
+    rect: PdfAnnotationObject["rect"],
+    glyph: string,
+    color: RGB | undefined,
+  ): PdfFreeTextAnnoObject {
+    // ZapfDingbats is one of the 14 standard PDF fonts (always available).
+    // U+2714 / U+2718 are in its built-in glyph table, so no font embedding
+    // or subset handling is required.
+    const fontSize = Math.max(
+      4,
+      Math.min(rect.size.width, rect.size.height) * 0.8,
+    );
+    return {
+      type: PdfAnnotationSubtype.FREETEXT,
+      id: annotationId,
+      pageIndex,
+      rect,
+      contents: glyph,
+      fontFamily: PdfStandardFont.ZapfDingbats,
+      fontSize,
+      fontColor: rgbToHex(color),
+      textAlign: PdfTextAlignment.Center,
+      verticalAlign: PdfVerticalAlignment.Middle,
+      opacity: 1,
+    };
+  }
+
+  private async createImageOverlay(
+    field: OverlayImage,
+    page: PdfPageObject,
+    rect: PdfAnnotationObject["rect"],
+    annotationId: string,
   ): Promise<void> {
-    const { position, image } = field;
-    const embedded =
-      image.mime === "image/png"
-        ? await doc.embedPng(image.bytes)
-        : await doc.embedJpg(image.bytes);
-    page.drawImage(embedded, {
-      x: position.xPt,
-      y: position.yPt,
-      width: position.widthPt,
-      height: position.heightPt,
-    });
-  }
-
-  private drawOverlayCheckmark(
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "checkmark" }>,
-  ): void {
-    const { position, color } = field;
-    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
-    const stroke = rgbOrBlack(color);
-    const thickness = Math.max(1, Math.min(w, h) * 0.12);
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.5 },
-      end: { x: x + w * 0.4, y: y + h * 0.2 },
-      thickness,
-      color: stroke,
-    });
-    page.drawLine({
-      start: { x: x + w * 0.4, y: y + h * 0.2 },
-      end: { x: x + w * 0.85, y: y + h * 0.8 },
-      thickness,
-      color: stroke,
-    });
-  }
-
-  private drawOverlayCross(
-    page: PDFPage,
-    field: Extract<OverlayField, { kind: "cross" }>,
-  ): void {
-    const { position, color } = field;
-    const { xPt: x, yPt: y, widthPt: w, heightPt: h } = position;
-    const stroke = rgbOrBlack(color);
-    const thickness = Math.max(1, Math.min(w, h) * 0.12);
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.15 },
-      end: { x: x + w * 0.85, y: y + h * 0.85 },
-      thickness,
-      color: stroke,
-    });
-    page.drawLine({
-      start: { x: x + w * 0.15, y: y + h * 0.85 },
-      end: { x: x + w * 0.85, y: y + h * 0.15 },
-      thickness,
-      color: stroke,
-    });
+    const annotation: PdfStampAnnoObject = {
+      type: PdfAnnotationSubtype.STAMP,
+      id: annotationId,
+      pageIndex: field.page,
+      rect,
+      contents: "",
+    };
+    // PDFium copies the image bytes out, so the ArrayBuffer we hand over can
+    // be reclaimed after the call.
+    const context: AnnotationCreateContext<PdfStampAnnoObject> = {
+      data: field.image.bytes.buffer.slice(
+        field.image.bytes.byteOffset,
+        field.image.bytes.byteOffset + field.image.bytes.byteLength,
+      ) as ArrayBuffer,
+      mimeType: field.image.mime,
+    };
+    await this.engine
+      .createPageAnnotation(this.doc, page, annotation, context)
+      .toPromise();
+    this.overlayAnnotations.set(field.id, { annotation, page });
   }
 
   private replaceField(next: AcroFormField): void {
@@ -508,7 +995,83 @@ function describe(value: unknown): string {
   return typeof value;
 }
 
-function rgbOrBlack(color: RGB | undefined): Color {
-  if (!color) return rgb(0, 0, 0);
-  return rgb(color.r, color.g, color.b);
+/**
+ * Rewrite every widget `/NM(<uuid>)` in the saved PDF bytes with a stable,
+ * position-derived identifier. The replacement UUID is also 36 chars long so
+ * byte offsets (and thus the `/xref` table) remain valid.
+ *
+ * This is a workaround for EmbedPDF's engine assigning a random UUID v4 to
+ * any widget that lacks `/NM` in the source — which makes repeated saves of
+ * the same template produce byte-different outputs without any other change.
+ */
+function normalizeNMs(bytes: Uint8Array, sourceNms: string[]): Uint8Array {
+  if (sourceNms.length === 0) return bytes;
+
+  // Build a stable-UUID mapping from the NMs PDFium reported, preserving
+  // visit order so the i-th widget always gets the i-th stable UUID.
+  const mapping = new Map<string, string>();
+  for (let i = 0; i < sourceNms.length; i++) {
+    if (!mapping.has(sourceNms[i])) {
+      mapping.set(sourceNms[i], stableWidgetUuid(i));
+    }
+  }
+
+  // Work on a mutable copy so we can do in-place byte rewrites. Because UUID
+  // v4 strings are 36 ASCII bytes, the substitutions preserve every byte
+  // offset — the PDF cross-reference table and stream lengths remain valid.
+  const out = new Uint8Array(bytes);
+  for (const [from, to] of mapping) {
+    if (from.length !== to.length) continue;
+    const fromBytes = asciiToBytes(from);
+    const toBytes = asciiToBytes(to);
+    replaceBytesInPlace(out, fromBytes, toBytes);
+  }
+  return out;
 }
+
+function asciiToBytes(s: string): Uint8Array {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+  return b;
+}
+
+/**
+ * Replace every occurrence of `from` with `to` inside `buf`. Assumes the two
+ * patterns have the same length (caller guarantees). O(n * m) search — fine
+ * for our sizes (a few hundred widgets × a 36-byte needle).
+ */
+function replaceBytesInPlace(
+  buf: Uint8Array,
+  from: Uint8Array,
+  to: Uint8Array,
+): void {
+  const len = from.length;
+  if (len === 0 || buf.length < len) return;
+  outer: for (let i = 0; i <= buf.length - len; i++) {
+    for (let j = 0; j < len; j++) {
+      if (buf[i + j] !== from[j]) continue outer;
+    }
+    for (let j = 0; j < len; j++) buf[i + j] = to[j];
+    i += len - 1;
+  }
+}
+
+/**
+ * Produce a stable v4-formatted UUID derived from an ordinal position. Used
+ * only to rewrite widget NMs in the output — not security-sensitive.
+ */
+function stableWidgetUuid(index: number): string {
+  // Deterministic hex string seeded with the index so different widgets get
+  // different UUIDs (otherwise two widgets would collide after normalization).
+  const hex = index.toString(16).padStart(32, "0");
+  // Force v4 / variant bits on the fixed positions.
+  const bytes = hex.split("");
+  bytes[12] = "4";
+  // The variant nibble (char at position 16 in the raw string) is always 8.
+  bytes[16] = "8";
+  const s = bytes.join("");
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20, 32)}`;
+}
+
+// Re-export for callers that want a single import.
+export type { OverlayText };

@@ -1,6 +1,6 @@
 {
   "name": "@fillapp/pdf-sdk",
-  "version": "0.2.1",
+  "version": "0.4.0",
   "description": "Isomorphic PDF form-filling SDK. Fill AcroForm fields and add overlay content. Same API in Node and browser.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -16,6 +16,16 @@
       "types": "./dist/utils.d.ts",
       "import": "./dist/utils.js",
       "require": "./dist/utils.cjs"
+    },
+    "./engine/browser": {
+      "types": "./dist/engine-browser.d.ts",
+      "import": "./dist/engine-browser.js",
+      "require": "./dist/engine-browser.cjs"
+    },
+    "./engine/node": {
+      "types": "./dist/engine-node.d.ts",
+      "import": "./dist/engine-node.js",
+      "require": "./dist/engine-node.cjs"
     }
   },
   "files": [
@@ -27,7 +37,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "build:browser-bundle": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=test/visual/viewer/sdk-bundle.mjs",
+    "build:browser-bundle": "esbuild test/visual/viewer/entry.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=test/visual/viewer/sdk-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -50,11 +60,15 @@
       "prettier --write"
     ]
   },
-  "dependencies": {
-    "@cantoo/pdf-lib": "^2.6.5",
-    "@pdf-lib/fontkit": "^1.1.1"
+  "peerDependencies": {
+    "@embedpdf/engines": "^2.14.0",
+    "@embedpdf/models": "^2.14.0",
+    "@embedpdf/pdfium": "^2.14.0"
   },
   "devDependencies": {
+    "@embedpdf/engines": "^2.14.0",
+    "@embedpdf/models": "^2.14.0",
+    "@embedpdf/pdfium": "^2.14.0",
     "@playwright/test": "^1.59.1",
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",

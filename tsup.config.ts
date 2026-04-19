@@ -4,6 +4,8 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     utils: "src/utils.ts",
+    "engine-browser": "src/engine-browser.ts",
+    "engine-node": "src/engine-node.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

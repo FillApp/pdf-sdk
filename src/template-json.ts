@@ -5,7 +5,7 @@
  * so the on-the-wire representation is plain JSON: byte buffers go to base64,
  * everything else stays structural.
  *
- * Pure JSON in / pure Template out — no PDF parsing, no pdf-lib, no fs, no
+ * Pure JSON in / pure Template out — no PDF parsing, no engine, no fs, no
  * Buffer. The functions here are isomorphic and rely on the base64 helpers in
  * `./utils.ts` for the only platform-sensitive step.
  */
@@ -18,9 +18,16 @@ import type {
   ListboxField,
   OverlayCheckmark,
   OverlayCross,
+  OverlayEllipse,
   OverlayField,
   OverlayImage,
+  OverlayInk,
+  OverlayLine,
+  OverlayPolygon,
+  OverlayPolyline,
+  OverlayRect,
   OverlayText,
+  Point,
   RadioField,
   RadioWidget,
   RGB,
@@ -160,11 +167,95 @@ type SerializedOverlayCross = {
   color?: SerializedRGB;
 };
 
+type SerializedPoint = { xPt: number; yPt: number };
+
+type SerializedOverlayRect = {
+  id: string;
+  source: "overlay";
+  kind: "rect";
+  page: number;
+  position: Position;
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  fill?: SerializedRGB;
+  opacity?: number;
+};
+
+type SerializedOverlayEllipse = {
+  id: string;
+  source: "overlay";
+  kind: "ellipse";
+  page: number;
+  position: Position;
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  fill?: SerializedRGB;
+  opacity?: number;
+};
+
+type SerializedOverlayLine = {
+  id: string;
+  source: "overlay";
+  kind: "line";
+  page: number;
+  position: Position;
+  start: SerializedPoint;
+  end: SerializedPoint;
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  arrowEnd?: boolean;
+  opacity?: number;
+};
+
+type SerializedOverlayPolyline = {
+  id: string;
+  source: "overlay";
+  kind: "polyline";
+  page: number;
+  position: Position;
+  points: SerializedPoint[];
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  opacity?: number;
+};
+
+type SerializedOverlayPolygon = {
+  id: string;
+  source: "overlay";
+  kind: "polygon";
+  page: number;
+  position: Position;
+  points: SerializedPoint[];
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  fill?: SerializedRGB;
+  opacity?: number;
+};
+
+type SerializedOverlayInk = {
+  id: string;
+  source: "overlay";
+  kind: "ink";
+  page: number;
+  position: Position;
+  strokes: SerializedPoint[][];
+  stroke?: SerializedRGB;
+  strokeWidthPt?: number;
+  opacity?: number;
+  intent?: "highlight";
+};
+
 type SerializedOverlayField =
   | SerializedOverlayText
   | SerializedOverlayImage
   | SerializedOverlayCheckmark
-  | SerializedOverlayCross;
+  | SerializedOverlayCross
+  | SerializedOverlayRect
+  | SerializedOverlayEllipse
+  | SerializedOverlayLine
+  | SerializedOverlayPolyline
+  | SerializedOverlayPolygon
+  | SerializedOverlayInk;
 
 type SerializedField = SerializedAcroFormField | SerializedOverlayField;
 
@@ -201,6 +292,10 @@ function copyPosition(p: Position): Position {
 
 function copyRGB(c: RGB): SerializedRGB {
   return { r: c.r, g: c.g, b: c.b };
+}
+
+function copyPoint(p: Point): SerializedPoint {
+  return { xPt: p.xPt, yPt: p.yPt };
 }
 
 // ---- serialization ----------------------------------------------------------
@@ -341,6 +436,100 @@ function serializeOverlayField(field: OverlayField): SerializedOverlayField {
         position: copyPosition(field.position),
       };
       if (field.color !== undefined) out.color = copyRGB(field.color);
+      return out;
+    }
+    case "rect": {
+      const out: SerializedOverlayRect = {
+        id: field.id,
+        source: "overlay",
+        kind: "rect",
+        page: field.page,
+        position: copyPosition(field.position),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.fill !== undefined) out.fill = copyRGB(field.fill);
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      return out;
+    }
+    case "ellipse": {
+      const out: SerializedOverlayEllipse = {
+        id: field.id,
+        source: "overlay",
+        kind: "ellipse",
+        page: field.page,
+        position: copyPosition(field.position),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.fill !== undefined) out.fill = copyRGB(field.fill);
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      return out;
+    }
+    case "line": {
+      const out: SerializedOverlayLine = {
+        id: field.id,
+        source: "overlay",
+        kind: "line",
+        page: field.page,
+        position: copyPosition(field.position),
+        start: copyPoint(field.start),
+        end: copyPoint(field.end),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.arrowEnd !== undefined) out.arrowEnd = field.arrowEnd;
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      return out;
+    }
+    case "polyline": {
+      const out: SerializedOverlayPolyline = {
+        id: field.id,
+        source: "overlay",
+        kind: "polyline",
+        page: field.page,
+        position: copyPosition(field.position),
+        points: field.points.map(copyPoint),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      return out;
+    }
+    case "polygon": {
+      const out: SerializedOverlayPolygon = {
+        id: field.id,
+        source: "overlay",
+        kind: "polygon",
+        page: field.page,
+        position: copyPosition(field.position),
+        points: field.points.map(copyPoint),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.fill !== undefined) out.fill = copyRGB(field.fill);
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      return out;
+    }
+    case "ink": {
+      const out: SerializedOverlayInk = {
+        id: field.id,
+        source: "overlay",
+        kind: "ink",
+        page: field.page,
+        position: copyPosition(field.position),
+        strokes: field.strokes.map((s) => s.map(copyPoint)),
+      };
+      if (field.stroke !== undefined) out.stroke = copyRGB(field.stroke);
+      if (field.strokeWidthPt !== undefined)
+        out.strokeWidthPt = field.strokeWidthPt;
+      if (field.opacity !== undefined) out.opacity = field.opacity;
+      if (field.intent !== undefined) out.intent = field.intent;
       return out;
     }
   }
@@ -652,8 +841,153 @@ function readOverlayField(
       }
       return cr;
     }
+    case "rect": {
+      const r: OverlayRect = { ...base, kind: "rect" };
+      applyShapeStyle(r, obj, context);
+      return r;
+    }
+    case "ellipse": {
+      const e: OverlayEllipse = { ...base, kind: "ellipse" };
+      applyShapeStyle(e, obj, context);
+      return e;
+    }
+    case "line": {
+      const start = readPoint(
+        requireKey(obj, "start", context),
+        `${context}.start`,
+      );
+      const end = readPoint(requireKey(obj, "end", context), `${context}.end`);
+      const line: OverlayLine = { ...base, kind: "line", start, end };
+      if ("stroke" in obj && obj.stroke !== undefined) {
+        line.stroke = readRGB(obj.stroke, `${context}.stroke`);
+      }
+      if ("strokeWidthPt" in obj && obj.strokeWidthPt !== undefined) {
+        line.strokeWidthPt = requireNumberVal(
+          obj.strokeWidthPt,
+          `${context}.strokeWidthPt`,
+        );
+      }
+      if ("arrowEnd" in obj && obj.arrowEnd !== undefined) {
+        if (typeof obj.arrowEnd !== "boolean") {
+          fail(`${context}.arrowEnd must be a boolean when present.`);
+        }
+        line.arrowEnd = obj.arrowEnd;
+      }
+      if ("opacity" in obj && obj.opacity !== undefined) {
+        line.opacity = requireNumberVal(obj.opacity, `${context}.opacity`);
+      }
+      return line;
+    }
+    case "polyline": {
+      const pts = readPointArray(
+        requireKey(obj, "points", context),
+        `${context}.points`,
+      );
+      const p: OverlayPolyline = { ...base, kind: "polyline", points: pts };
+      if ("stroke" in obj && obj.stroke !== undefined) {
+        p.stroke = readRGB(obj.stroke, `${context}.stroke`);
+      }
+      if ("strokeWidthPt" in obj && obj.strokeWidthPt !== undefined) {
+        p.strokeWidthPt = requireNumberVal(
+          obj.strokeWidthPt,
+          `${context}.strokeWidthPt`,
+        );
+      }
+      if ("opacity" in obj && obj.opacity !== undefined) {
+        p.opacity = requireNumberVal(obj.opacity, `${context}.opacity`);
+      }
+      return p;
+    }
+    case "polygon": {
+      const pts = readPointArray(
+        requireKey(obj, "points", context),
+        `${context}.points`,
+      );
+      const p: OverlayPolygon = { ...base, kind: "polygon", points: pts };
+      applyShapeStyle(p, obj, context);
+      return p;
+    }
+    case "ink": {
+      const strokesRaw = requireKey(obj, "strokes", context);
+      if (!Array.isArray(strokesRaw)) {
+        fail(`${context}.strokes must be an array of point arrays.`);
+      }
+      const strokes = strokesRaw.map((s, i) =>
+        readPointArray(s, `${context}.strokes[${i}]`),
+      );
+      const ink: OverlayInk = { ...base, kind: "ink", strokes };
+      if ("stroke" in obj && obj.stroke !== undefined) {
+        ink.stroke = readRGB(obj.stroke, `${context}.stroke`);
+      }
+      if ("strokeWidthPt" in obj && obj.strokeWidthPt !== undefined) {
+        ink.strokeWidthPt = requireNumberVal(
+          obj.strokeWidthPt,
+          `${context}.strokeWidthPt`,
+        );
+      }
+      if ("opacity" in obj && obj.opacity !== undefined) {
+        ink.opacity = requireNumberVal(obj.opacity, `${context}.opacity`);
+      }
+      if ("intent" in obj && obj.intent !== undefined) {
+        if (obj.intent !== "highlight") {
+          fail(
+            `${context}.intent must be "highlight" when present; got ${JSON.stringify(obj.intent)}.`,
+          );
+        }
+        ink.intent = "highlight";
+      }
+      return ink;
+    }
     default:
       return fail(`${context}.kind "${kind}" is not a known overlay kind.`);
+  }
+}
+
+function requireNumberVal(value: unknown, context: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    fail(`${context} must be a finite number.`);
+  }
+  return value;
+}
+
+function readPoint(value: unknown, context: string): Point {
+  if (!isPlainObject(value))
+    fail(`${context} must be an object with xPt, yPt.`);
+  return {
+    xPt: requireNumber(value, "xPt", context),
+    yPt: requireNumber(value, "yPt", context),
+  };
+}
+
+function readPointArray(value: unknown, context: string): Point[] {
+  if (!Array.isArray(value)) fail(`${context} must be an array of points.`);
+  return value.map((v, i) => readPoint(v, `${context}[${i}]`));
+}
+
+function applyShapeStyle(
+  target: {
+    stroke?: RGB;
+    strokeWidthPt?: number;
+    fill?: RGB;
+    opacity?: number;
+  },
+  obj: Record<string, unknown>,
+  context: string,
+): void {
+  if ("stroke" in obj && obj.stroke !== undefined) {
+    target.stroke = readRGB(obj.stroke, `${context}.stroke`);
+  }
+  if ("strokeWidthPt" in obj && obj.strokeWidthPt !== undefined) {
+    target.strokeWidthPt = requireNumberVal(
+      obj.strokeWidthPt,
+      `${context}.strokeWidthPt`,
+    );
+  }
+  if ("fill" in obj && obj.fill !== undefined) {
+    target.fill = readRGB(obj.fill, `${context}.fill`);
+  }
+  if ("opacity" in obj && obj.opacity !== undefined) {
+    target.opacity = requireNumberVal(obj.opacity, `${context}.opacity`);
   }
 }
 
