@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1]
+
+### Fixed
+
+- `generate()` is now idempotent when overlays are present. Previously, a
+  second call stacked duplicate text, images, and glyphs onto the pages
+  because overlays were drawn onto the same loaded document. Overlays are
+  now drawn onto a scratch copy of the document so `this.doc` stays a
+  clean baseline across repeat calls.
+
+### Docs
+
+- Rewrote README for open-source release: new-project status banner,
+  refreshed roadmap of features still to land before 1.0.
+- Trimmed CLAUDE.md down to the stable context an agent needs (vision,
+  `Template` contract, hard rules, quality gates, release flow).
+
 ## [0.2.0]
 
 ### Added
