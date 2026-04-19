@@ -337,21 +337,29 @@ export class PdfSdk {
    *      each widget with its new value. The SDK does not pre-bake
    *      appearance streams itself — that path competes with pdf-lib's
    *      renderer and produces visible artifacts.
-   *   2. Overlay fields are drawn onto page content streams. These are
-   *      independent of the AcroForm and are intended for flat / scanned
-   *      PDFs where no interactive widget exists.
+   *   2. Overlay fields are drawn onto page content streams of a scratch
+   *      copy — never onto `this.doc` — so repeated `generate()` calls are
+   *      idempotent and don't accumulate drawings.
    */
   async generate(opts: GenerateOptions = {}): Promise<Uint8Array> {
     const form = this.doc.getForm();
     form.acroForm.dict.set(PDFName.of("NeedAppearances"), PDFBool.True);
+    this.doc.setModificationDate(DETERMINISTIC_DATE);
 
-    if (this.hasOverlays()) {
-      const overlayFont = await this.embedOverlayFont(opts.font);
-      await this.drawOverlays(overlayFont);
+    if (!this.hasOverlays()) {
+      return await this.doc.save();
     }
 
-    this.doc.setModificationDate(DETERMINISTIC_DATE);
-    return await this.doc.save();
+    // Serialize AcroForm state, reload as a fresh scratch doc, and draw
+    // overlays onto that. `this.doc` stays unmodified so the next call
+    // starts from the same clean baseline.
+    const intermediate = await this.doc.save();
+    const scratch = await PDFDocument.load(intermediate);
+    scratch.registerFontkit(fontkit);
+    const overlayFont = await this.embedOverlayFontInto(scratch, opts.font);
+    await this.drawOverlaysOnto(scratch, overlayFont);
+    scratch.setModificationDate(DETERMINISTIC_DATE);
+    return await scratch.save();
   }
 
   /** Access the underlying pdf-lib document. Advanced use only. */
@@ -363,20 +371,23 @@ export class PdfSdk {
     return this.template.fields.some((f) => f.source === "overlay");
   }
 
-  private async embedOverlayFont(
+  private async embedOverlayFontInto(
+    doc: PDFDocument,
     override?: Uint8Array | ArrayBuffer,
   ): Promise<PDFFont> {
-    this.doc.registerFontkit(fontkit);
     const bytes = override ?? base64ToBytes(NOTO_SANS_REGULAR_TTF_BASE64);
-    return await this.doc.embedFont(bytes, { subset: true });
+    return await doc.embedFont(bytes, { subset: true });
   }
 
   /**
-   * Paint overlay fields onto their target pages. Runs only when overlays
-   * exist so the common AcroForm-fill path pays no font-embedding cost.
+   * Paint overlay fields onto the given document's pages. Writes to
+   * `doc.getPages()` — pass a scratch copy, never `this.doc`.
    */
-  private async drawOverlays(font: PDFFont): Promise<void> {
-    const pages = this.doc.getPages();
+  private async drawOverlaysOnto(
+    doc: PDFDocument,
+    font: PDFFont,
+  ): Promise<void> {
+    const pages = doc.getPages();
     for (const field of this.template.fields) {
       if (field.source !== "overlay") continue;
       const page = pages[field.page];
@@ -392,7 +403,7 @@ export class PdfSdk {
           this.drawOverlayText(page, font, field);
           break;
         case "image":
-          await this.drawOverlayImage(page, field);
+          await this.drawOverlayImage(doc, page, field);
           break;
         case "checkmark":
           this.drawOverlayCheckmark(page, field);
@@ -421,14 +432,15 @@ export class PdfSdk {
   }
 
   private async drawOverlayImage(
+    doc: PDFDocument,
     page: PDFPage,
     field: Extract<OverlayField, { kind: "image" }>,
   ): Promise<void> {
     const { position, image } = field;
     const embedded =
       image.mime === "image/png"
-        ? await this.doc.embedPng(image.bytes)
-        : await this.doc.embedJpg(image.bytes);
+        ? await doc.embedPng(image.bytes)
+        : await doc.embedJpg(image.bytes);
     page.drawImage(embedded, {
       x: position.xPt,
       y: position.yPt,
